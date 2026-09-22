@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Tukonya Scripts - ReaPack repository index.
+  Format: https://github.com/cfillion/reapack/wiki/Index-Format
+  Effects install to <REAPER resource>/Effects/Tukonya Scripts/<category>/...
+  Scripts install to <REAPER resource>/Scripts/Tukonya Scripts/<category>/...
+-->
+<index version="1" name="Tukonya Scripts">
+  <category name="Rendering">
+    <reapack name="TUKONYA_Render.lua" type="script" desc="TUKONYA RENDER">
+      <version name="2.2.2" author="tuko" time="2026-09-23T12:00:00Z">
+        <changelog><![CDATA[First ReaPack release. One ReaImGui window with four render modes: 2mix Render, 2mix Preview, Para + 2mix, Hardware Print. Requires SWS and ReaImGui 0.10 or later. A project template (template/TUKONYA_RENDER_template.RPP) is installed alongside the script; see README.md.]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/TUKONYA_Render.lua</source>
+        <source file="tukonya_render_model.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_render_model.lua</source>
+        <source file="tukonya_render_core.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_render_core.lua</source>
+        <source file="tukonya_render_settings.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_render_settings.lua</source>
+        <source file="tukonya_render_store.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_render_store.lua</source>
+        <source file="tukonya_vstpreset_lib.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_vstpreset_lib.lua</source>
+        <source file="README.md">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/README.md</source>
+        <source file="template/TUKONYA_RENDER_template.RPP">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/template/TUKONYA_RENDER_template.RPP</source>
+        <source file="template/Media/PREVIEWONLY.wav">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/template/Media/PREVIEWONLY.wav</source>
+      </version>
+      <metadata>
+        <description><![CDATA[{\rtf1 {\fonttbl {\f0 Helvetica;}} \f0\fs20 TUKONYA RENDER: one settings window (ReaImGui) for four render workflows in REAPER - 2mix Render, 2mix Preview (watermarked), Para + 2mix (stems in the project folder structure) and Hardware Print. Needs REAPER 7, SWS and ReaImGui 0.10+. Use the bundled project template; see README.md in the install folder.}]]></description>
+        <link rel="website">https://github.com/tuko1573/tukonya-scripts-reapack</link>
+      </metadata>
+    </reapack>
+  </category>
+  <metadata>
+    <description><![CDATA[{\rtf1 {\fonttbl {\f0 Helvetica;}} \f0\fs20 Tukonya Scripts: JSFX effects and ReaScripts for REAPER by tuko. Free for personal use, no warranty.}]]></description>
+    <link rel="website">https://github.com/tuko1573/tukonya-scripts-reapack</link>
+  </metadata>
+</index>
