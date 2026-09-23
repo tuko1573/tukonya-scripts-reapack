@@ -26,6 +26,55 @@
       </metadata>
     </reapack>
   </category>
+  <category name="Language">
+    <reapack name="TUKONYA_JP LangPack Updater.lua" type="script" desc="TUKONYA JP LangPack Updater">
+      <version name="1.0.0" author="tuko" time="2026-09-24T00:00:00Z">
+        <changelog><![CDATA[1.0.0: REAPERの日本語パッチ（Japanese_add_SWS_kb_edit）を起動時に1日1回確認して最新に保つ。別の日本語パッチを使っている人はこの配布元のものに切り替える（元のファイルは残す）。英語のまま使っている人には何もしない。]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Language/TUKONYA_JP%20LangPack%20Updater.lua</source>
+        <source main="main" file="TUKONYA_JP LangPack Updater (Install Startup).lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Language/TUKONYA_JP%20LangPack%20Updater%20(Install%20Startup).lua</source>
+        <source file="lib/jlu_langpack.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Language/lib/jlu_langpack.lua</source>
+        <source file="lib/jlu_startup.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Language/lib/jlu_startup.lua</source>
+        <source file="lib/jlu_util.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Language/lib/jlu_util.lua</source>
+        <source file="README.md">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Language/README.md</source>
+      </version>
+      <metadata>
+        <description><![CDATA[{\rtf1 {\fonttbl {\f0 Helvetica;}} \f0\fs20 TUKONYA JP LangPack Updater: keeps the Japanese REAPER language pack (Japanese_add_SWS_kb_edit from stash.reaper.fm) up to date. Checks once a day at REAPER startup, replaces the pack when a new version is out, and switches users of another Japanese pack to this one (the original file is kept). Does nothing if REAPER is in English. Run the (Install Startup) action once; run the main action to check now.}]]></description>
+        <link rel="website">https://github.com/tuko1573/tukonya-scripts-reapack</link>
+      </metadata>
+    </reapack>
+  </category>
+  <category name="Utility">
+    <reapack name="TUKONYA_Team Plugin Checker.lua" type="script" desc="TUKONYA Team Plugin Checker">
+      <version name="1.0.0" author="tuko" time="2026-09-24T00:00:00Z">
+        <changelog><![CDATA[初版。ReaPack配布。チームや仲間うちで各自の所有プラグインを共有フォルダに集め、REAPER内の小窓（検索／整備／設定タブ）で検索・そのまま挿入できる。REAPER起動時の自動送信の登録に対応。REAPER 7、SWS、ReaImGui 0.10以降が必要。]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA_Team%20Plugin%20Checker.lua</source>
+        <source main="main" file="TUKONYA_Team Plugin Checker (Send Now).lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA_Team%20Plugin%20Checker%20(Send%20Now).lua</source>
+        <source main="main" file="TUKONYA_Team Plugin Checker (Install Startup).lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA_Team%20Plugin%20Checker%20(Install%20Startup).lua</source>
+        <source file="lib/tpc_bootstrap.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/tpc_bootstrap.lua</source>
+        <source file="lib/tpc_collector.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/tpc_collector.lua</source>
+        <source file="lib/tpc_config.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/tpc_config.lua</source>
+        <source file="lib/tpc_ini.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/tpc_ini.lua</source>
+        <source file="lib/tpc_json.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/tpc_json.lua</source>
+        <source file="lib/tpc_matcher.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/tpc_matcher.lua</source>
+        <source file="lib/tpc_matcher_links.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/tpc_matcher_links.lua</source>
+        <source file="lib/tpc_normalize.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/tpc_normalize.lua</source>
+        <source file="lib/tpc_startup.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/tpc_startup.lua</source>
+        <source file="lib/tpc_store.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/tpc_store.lua</source>
+        <source file="lib/tpc_ui.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/tpc_ui.lua</source>
+        <source file="lib/tpc_ui_popups.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/tpc_ui_popups.lua</source>
+        <source file="lib/tpc_ui_settings.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/tpc_ui_settings.lua</source>
+        <source file="lib/tpc_ui_tabs.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/tpc_ui_tabs.lua</source>
+        <source file="lib/tpc_viewmodel.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/tpc_viewmodel.lua</source>
+        <source file="lib/tpc_viewmodel_actions.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/tpc_viewmodel_actions.lua</source>
+        <source file="lib/tpc_viewmodel_sort.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/tpc_viewmodel_sort.lua</source>
+        <source file="README.md">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/README.md</source>
+      </version>
+      <metadata>
+        <description><![CDATA[{\rtf1 {\fonttbl {\f0 Helvetica;}} \f0\fs20 TUKONYA Team Plugin Checker: search which plugins your team members own from a REAPER window, and insert them directly. Needs REAPER 7, SWS and ReaImGui 0.10+. See README.md in the install folder.}]]></description>
+        <link rel="website">https://github.com/tuko1573/tukonya-scripts-reapack</link>
+      </metadata>
+    </reapack>
+  </category>
   <metadata>
     <description><![CDATA[{\rtf1 {\fonttbl {\f0 Helvetica;}} \f0\fs20 Tukonya Scripts: JSFX effects and ReaScripts for REAPER by tuko. Free for personal use, no warranty.}]]></description>
     <link rel="website">https://github.com/tuko1573/tukonya-scripts-reapack</link>

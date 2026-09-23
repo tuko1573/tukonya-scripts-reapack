@@ -19,6 +19,7 @@ Free for personal use. No warranty.
 | Package | Type | What it is |
 |---|---|---|
 | TUKONYA RENDER | ReaScript (Rendering) | One ReaImGui window for four render workflows: 2mix Render, 2mix Preview (watermarked), Para + 2mix (stems, project folder structure kept) and Hardware Print. Needs SWS and ReaImGui 0.10+. Installs with a project template; read the README.md next to the script. |
+| TUKONYA Team Plugin Checker | ReaScript (Utility) | A REAPER window that searches which plugins each team member owns, from a shared folder, and inserts them directly. Needs SWS and ReaImGui 0.10+. Read the README.md next to the script. || TUKONYA JP LangPack Updater | ReaScript (Language) | Keeps the Japanese REAPER language pack up to date, checking once a day at startup. Does nothing if REAPER runs in English. |
 
 More to come.
 
@@ -31,4 +32,6 @@ REAPER用のJSFXエフェクトとReaScriptの配布元です。個人利用は�
 ## Notes
 
 - No third-party source code is included in any package.
+- TUKONYA JP LangPack Updater installs to `Scripts/Tukonya Scripts/Language/`.
 - TUKONYA RENDER installs to `Scripts/Tukonya Scripts/Rendering/`. Open `template/TUKONYA_RENDER_template.RPP` in that folder as the base project.
+- TUKONYA Team Plugin Checker installs to `Scripts/Tukonya Scripts/Utility/`.
