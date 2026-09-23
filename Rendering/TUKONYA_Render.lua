@@ -22,7 +22,7 @@ local Model = dofile(SCRIPT_DIR .. "tukonya_render_model.lua")
 local S     = Model.S
 local Store = Model.Store
 
-local VERSION = "2.2.2"            -- 配布物の版。窓の見出しに出る
+local VERSION = "2.2.3"            -- 配布物の版。窓の見出しに出る
 local NAME    = "TUKONYA RENDER"
 local TITLE   = NAME .. "  v" .. VERSION   -- 窓の見出し（ImGuiの窓の名前でもある）
 local NS      = "TUKONYA_RENDER"
@@ -344,7 +344,15 @@ local function draw_done(ctx)
       or ("予期しないエラーが出ました:\n" .. tostring(res.err)))
     ImGui.Separator(ctx)
   else
-    ImGui.Text(ctx, "書き出しました。")
+    -- 2mix Render / 2mix Preview / Para + 2mix は ReaInsert の有無で書き出し方が変わるので、その旨を見出しに出す。
+    -- Hardware Print は j.hw_mode を持たないので従来どおり。
+    if j and j.hw_mode == true then
+      ImGui.Text(ctx, "ReaInsertを検出したため、ハードウェア書き出しモードで出力しました。")
+    elseif j and j.hw_mode == false then
+      ImGui.Text(ctx, "有効なReaInsertを検出しなかったため、オフラインモードで出力しました。")
+    else
+      ImGui.Text(ctx, "書き出しました。")
+    end
   end
 
   if j then

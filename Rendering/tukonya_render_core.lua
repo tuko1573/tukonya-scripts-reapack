@@ -1428,6 +1428,13 @@ function Job:export_master_chain(dir, reai)
   local n = 0
   for i = 0, self.FXN - 1 do
     local _, ftype = reaper.TrackFX_GetNamedConfigParm(self.MASTER, i, "fx_type")
+    if self.SAVE_FX[i] and ftype ~= "VST3" and ftype ~= "VST3i" then
+      -- 有効なのに VST3 ではない（CLAP / VST2 / AU / JS …）→ .vstpreset は出せない。ReaInsert は対象外。
+      local _, nm = reaper.TrackFX_GetFXName(self.MASTER, i, "")
+      if not string.find(string.lower(nm or ""), cfg.REAINSERT_MATCH, 1, true) then
+        self:warn(("%02d %s: VST3 ではないため .vstpreset 作成をスキップしました。"):format(i + 1, nm or "?"))
+      end
+    end
     if self.SAVE_FX[i] and ftype == "VST3" then
       n = n + 1
       local _, name  = reaper.TrackFX_GetFXName(self.MASTER, i, "")
