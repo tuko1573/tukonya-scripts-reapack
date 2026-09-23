@@ -8,6 +8,18 @@
 <index version="1" name="Tukonya Scripts">
   <category name="Rendering">
     <reapack name="TUKONYA_Render.lua" type="script" desc="TUKONYA RENDER">
+      <version name="2.2.3" author="tuko" time="2026-09-24T14:00:00Z">
+        <changelog><![CDATA[2.2.3: 完了画面だけの変更。見出しが ReaInsert の有無で「ハードウェア書き出しモード／オフラインモード」を言い分ける。Para + 2mix で MASTER に有効な VST3 以外のプラグインがあると「.vstpreset 作成をスキップしました」を注意欄に出す。音は変わらない。]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/TUKONYA_Render.lua</source>
+        <source file="tukonya_render_model.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_render_model.lua</source>
+        <source file="tukonya_render_core.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_render_core.lua</source>
+        <source file="tukonya_render_settings.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_render_settings.lua</source>
+        <source file="tukonya_render_store.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_render_store.lua</source>
+        <source file="tukonya_vstpreset_lib.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_vstpreset_lib.lua</source>
+        <source file="README.md">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/README.md</source>
+        <source file="template/TUKONYA_RENDER_template.RPP">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/template/TUKONYA_RENDER_template.RPP</source>
+        <source file="template/Media/PREVIEWONLY.wav">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/template/Media/PREVIEWONLY.wav</source>
+      </version>
       <version name="2.2.2" author="tuko" time="2026-09-23T12:00:00Z">
         <changelog><![CDATA[First ReaPack release. One ReaImGui window with four render modes: 2mix Render, 2mix Preview, Para + 2mix, Hardware Print. Requires SWS and ReaImGui 0.10 or later. A project template (template/TUKONYA_RENDER_template.RPP) is installed alongside the script; see README.md.]]></changelog>
         <source main="main">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/TUKONYA_Render.lua</source>
@@ -96,6 +108,22 @@
       </version>
       <metadata>
         <description><![CDATA[{\rtf1 {\fonttbl {\f0 Helvetica;}} \f0\fs20 TUKONYA Team Plugin Checker: search which plugins your team members own from a REAPER window, and insert them directly. Needs REAPER 7, SWS and ReaImGui 0.10+. See README.md in the install folder.}]]></description>
+        <link rel="website">https://github.com/tuko1573/tukonya-scripts-reapack</link>
+      </metadata>
+    </reapack>
+    <reapack name="TUKONYA_VST3 Only Master.lua" type="script" desc="TUKONYA_VST3 Only Master">
+      <version name="1.0.0" author="tuko" time="2026-09-24T14:00:00Z">
+        <changelog><![CDATA[初版。「MASTER」トラックを常に監視し、VST3以外のプラグインがインサートされた時に警告して、同名のVST3版があればその場で置き換える。ReaInsertは対象外。(Install Startup) を1回実行するとREAPER起動時に自動で始まる。REAPER 7 が必要。SWS・ReaImGui は不要。]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA_VST3%20Only%20Master.lua</source>
+        <source main="main" file="TUKONYA_VST3 Only Master (Install Startup).lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA_VST3%20Only%20Master%20(Install%20Startup).lua</source>
+        <source main="main" file="TUKONYA_VST3 Only Master (Uninstall Startup).lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA_VST3%20Only%20Master%20(Uninstall%20Startup).lua</source>
+        <source file="lib/vom_core.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/vom_core.lua</source>
+        <source file="lib/vom_normalize.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/vom_normalize.lua</source>
+        <source file="lib/vom_startup.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/vom_startup.lua</source>
+        <source file="README_VST3OnlyMaster.md">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/README_VST3OnlyMaster.md</source>
+      </version>
+      <metadata>
+        <description><![CDATA[{\rtf1 {\fonttbl {\f0 Helvetica;}} \f0\fs20 TUKONYA VST3 Only Master: watches the track named "MASTER" and, the moment a non-VST3 plugin (CLAP / VST2 / AU / JSFX) is inserted, asks whether to replace it with the VST3 version in the same slot (ReaInsert is ignored). Made for TUKONYA RENDER's Para + 2mix mode, which can only export .vstpreset from VST3. Run the (Install Startup) action once to start it automatically with REAPER. Needs REAPER 7. See README_VST3OnlyMaster.md in the install folder.}]]></description>
         <link rel="website">https://github.com/tuko1573/tukonya-scripts-reapack</link>
       </metadata>
     </reapack>
