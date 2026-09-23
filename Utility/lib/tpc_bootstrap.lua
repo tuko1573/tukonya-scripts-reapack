@@ -8,8 +8,7 @@
     - ログ（<REAPERリソース>/TeamPluginChecker.log、末尾200行だけ残す）
     - tpc_store 用の deps（ファイル読み書き・列挙・時刻）を実機reaperから組み立てる
     - tpc_config（ExtState）の生成
-    - 初回設定（今のプロファイルの 共有フォルダ・メンバーID・表示名）の確認
-    - プロファイルの追加
+    （初回設定・プロファイルの追加は小窓の設定タブの入力欄に移した: tpc_ui_settings.lua）
 
 --]]
 
@@ -134,93 +133,6 @@ end
 
 function M.new_store(log_fn)
   return tpc_store.new(M.build_deps(log_fn))
-end
-
--- ============================================================
--- 初回設定（今のプロファイル: 共有フォルダ・メンバーID・表示名）
--- ============================================================
-
-local function trim(s)
-  return (tostring(s or ""):gsub("^%s+", ""):gsub("%s+$", ""))
-end
-
-local function fail(log_fn, reason, quiet)
-  log_fn("初回設定: " .. reason)
-  if not quiet and reaper and reaper.MB then
-    reaper.MB(reason, "Team Plugin Checker", 0)
-  end
-  return false, reason
-end
-
---- 今のプロファイルがそろっていなければ、1つのダイアログで3項目を聞く。
--- @param opts { prompt = bool }  prompt=false なら聞かずに false を返す（起動時・小窓の自動処理）
--- @return true（そろっている／今そろえた） / false, reason
-function M.ensure_profile(store, config, log_fn, opts)
-  opts = opts or {}
-  log_fn = log_fn or M.log
-  local name = config:current()
-  if config:profile_complete(name) then return true end
-
-  if opts.prompt == false then
-    log_fn(("プロファイル %s の初回設定がまだ（共有フォルダ・メンバーID・表示名）"):format(name))
-    return false, "未設定"
-  end
-
-  local prefill_dir = config:get_shared_dir()
-  if not prefill_dir then prefill_dir = store:suggest_shared_dir() end
-  local defaults = table.concat({
-    prefill_dir or "", config:get_member_id() or "", config:get_display_name() or "",
-  }, ",")
-
-  local ok, csv = reaper.GetUserInputs(
-    "Team Plugin Checker 初回設定（プロファイル: " .. name .. "）", 3,
-    "共有フォルダのパス,メンバーID（半角英数）,表示名,extrawidth=300", defaults)
-  if not ok then
-    log_fn("初回設定がキャンセルされた（プロファイル: " .. name .. "）")
-    return false, "キャンセル"
-  end
-
-  local dir, id, display_name = csv:match("^([^,]*),([^,]*),(.*)$")
-  dir = tpc_store.normalize_pasted_path(dir)
-  id = trim(id)
-  display_name = trim(display_name)
-
-  if dir == "" then
-    return fail(log_fn, "共有フォルダのパスが空です。", opts.quiet)
-  end
-  if not store:path_exists(dir) then
-    return fail(log_fn, "共有フォルダが見つかりません: " .. dir ..
-      "\n\n先にフォルダを作ってから、もう一度実行してください。", opts.quiet)
-  end
-  if not tpc_config.valid_member_id(id) then
-    return fail(log_fn, "メンバーIDは半角の小文字英数字とアンダースコアのみ、1〜16文字です（例: taro）。" ..
-      "\n入力: " .. id, opts.quiet)
-  end
-  if display_name == "" then display_name = id end
-
-  config:set_shared_dir(dir)
-  config:set_member_id(id)
-  config:set_display_name(display_name)
-  log_fn(("初回設定: プロファイル %s 共有フォルダ=%s member=%s"):format(name, dir, id))
-  return true
-end
-
---- プロファイル名を聞いて追加し、今のプロファイルにしてから初回設定を聞く。
--- 3項目の方でキャンセルされたら、追加したプロファイルは残す（設定タブで後から埋められる）。
--- @return true / false, reason
-function M.prompt_new_profile(store, config, log_fn)
-  log_fn = log_fn or M.log
-  local ok, name = reaper.GetUserInputs("Team Plugin Checker: プロファイルを追加", 1,
-    "プロファイル名（半角英数・_・-）", "")
-  if not ok then return false, "キャンセル" end
-  name = trim(name)
-  local added, err = config:add_profile(name)
-  if not added then
-    return fail(log_fn, tostring(err), false)
-  end
-  config:set_current(name)
-  log_fn("プロファイルを追加: " .. name)
-  return M.ensure_profile(store, config, log_fn, { prompt = true })
 end
 
 return M

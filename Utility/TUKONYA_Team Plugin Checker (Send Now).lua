@@ -1,8 +1,8 @@
 --[[
   TUKONYA_Team Plugin Checker (Send Now).lua
   Team Plugin Checker — 自分のプラグイン一覧を集めて、全プロファイルの共有フォルダへ書く。
-  画面は出さない（今のプロファイルが未設定のときだけ、手で実行したら
-  reaper.GetUserInputs で 共有フォルダ・メンバーID・表示名 を聞く）。
+  画面は出さない（今のプロファイルが未設定のまま手で実行したときは、小窓の設定タブへ
+  案内するメッセージを1つ出して何もせずに終わる。入力はすべて小窓の設定タブで行う）。
   起動時（__startup.lua）と「今すぐ更新」ボタンの両方から呼ぶ。
   一覧の収集は1回だけ行い、プロファイルごとに書き分ける（同じ機械なので中身は同じ）。
   1日1回のスロットルと前回の指紋はプロファイルごとに持つ。
@@ -195,6 +195,9 @@ local STATUS_TEXT = {
   error = function(r) return "失敗（" .. tostring(r.reason) .. "）" end,
 }
 
+local FIRST_RUN_MESSAGE = "初回設定がまだです。小窓（TUKONYA_Team Plugin Checker）の設定タブで" ..
+  "共有フォルダとメンバーIDを入れてください。"
+
 local function main()
   local deps = tpc_bootstrap.build_deps(SB_SENDNOW_LOG)
   local store = tpc_store.new(deps)
@@ -204,6 +207,14 @@ local function main()
   -- 未設定のプロファイルは黙って飛ばし、ログにだけ残す（判断5: 起動時の通知は出さない）。
   local quiet = (TPC_QUIET == true)
   local current = config:current()
+
+  -- 手で実行して、今のプロファイルが未設定: 案内を1つ出して止める（ここでは聞かない）
+  if not quiet and not config:profile_complete(current) then
+    SB_SENDNOW_LOG(("[%s] 初回設定がまだなので止めた（手で実行）"):format(current))
+    SB_RESULT = { aborted = true }
+    reaper.MB(FIRST_RUN_MESSAGE, "Team Plugin Checker: 今すぐ更新", 0)
+    return
+  end
 
   local inv_cache = nil
   local ctx = {
@@ -222,9 +233,6 @@ local function main()
 
   local results = {}
   for _, name in ipairs(config:profiles()) do
-    if not config:profile_complete(name) and not quiet and name == current then
-      tpc_bootstrap.ensure_profile(store, config, SB_SENDNOW_LOG, { prompt = true })
-    end
     local r
     if not config:profile_complete(name) then
       SB_SENDNOW_LOG(("[%s] 初回設定がまだなので飛ばした（小窓の設定タブで設定してください）"):format(name))
@@ -252,7 +260,7 @@ if not ok then
 end
 
 -- 手で実行したときだけ結果を1つのダイアログで見せる（起動時は TPC_QUIET = true で黙る）
-if TPC_QUIET ~= true then
+if TPC_QUIET ~= true and not (SB_RESULT and SB_RESULT.aborted) then
   local r = SB_RESULT or {}
   local msg
   if r.error then

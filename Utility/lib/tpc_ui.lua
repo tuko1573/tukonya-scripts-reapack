@@ -176,8 +176,66 @@ function M.profile_changed(app)
   app.state = nil
   app.link_request, app.link_edit = nil, nil
   app.alias_request, app.alias_edit = nil, nil
+  app.profile_form = nil
   M.resolve_root(app)
+  M.ensure_form(app)
   app.pending_reload = true
+end
+
+-- ============================================================
+-- 設定タブの入力欄（初回設定／プロファイルの追加／共有フォルダの変更）
+-- 中身は app.profile_form = { mode, profile, name, shared_dir, member_id, display_name, error }
+-- 描画と「保存」は tpc_ui_settings.lua。ここは開く・閉じるだけ。
+-- ============================================================
+
+--- 追加するプロファイル名の候補（team2, team3, … のうち最初の空き）。
+function M.suggest_profile_name(config)
+  local n = 2
+  while config:has_profile("team" .. n) do n = n + 1 end
+  return "team" .. n
+end
+
+--- そろったプロファイルが1つでもあるか（無ければ入力欄の「キャンセル」を出さない）。
+function M.any_profile_complete(config)
+  for _, name in ipairs(config:profiles()) do
+    if config:profile_complete(name) then return true end
+  end
+  return false
+end
+
+--- 入力欄を開く。mode = "first"（今のプロファイルの初回設定）| "add" | "folder"
+function M.open_profile_form(app, mode)
+  local config, store = app.config, app.store
+  local current = config:current()
+  local form = { mode = mode, profile = current, name = "", shared_dir = "", member_id = "", display_name = "" }
+  local function suggest_dir()
+    local ok, dir = pcall(store.suggest_shared_dir, store)
+    return (ok and dir) or ""
+  end
+  if mode == "first" then
+    form.shared_dir = config:get_shared_dir() or suggest_dir()
+    form.member_id = config:get_member_id() or ""
+    form.display_name = config:get_display_name() or ""
+  elseif mode == "add" then
+    form.name = M.suggest_profile_name(config)
+    form.shared_dir = suggest_dir()
+    -- 同じ人が別のチームに入る想定なので、IDと表示名は今のものを下書きにする（直せる）
+    form.member_id = config:get_member_id() or ""
+    form.display_name = config:get_display_name() or ""
+  else
+    form.shared_dir = config:get_shared_dir() or ""
+  end
+  app.profile_form = form
+  return form
+end
+
+--- 今のプロファイルが未設定なら、初回設定の入力欄を開く（開いていれば何もしない）。
+function M.ensure_form(app)
+  if app.profile_form then return app.profile_form end
+  if not app.config:profile_complete(app.config:current()) then
+    return M.open_profile_form(app, "first")
+  end
+  return nil
 end
 
 --- 設定ボタンから頼まれたダイアログ付きの操作（描画の外、次のフレームの頭で実行する）。
@@ -197,10 +255,10 @@ function M.profile_hint(app)
   if app.root then return nil end
   local config = app.config
   if not config:profile_complete(app.profile) then
-    return ("プロファイル「%s」の初回設定がまだです。設定タブの「プロファイル」で" ..
-      "「初回設定…」を押してください。"):format(tostring(app.profile))
+    return ("プロファイル「%s」の初回設定がまだです。設定タブの入力欄で共有フォルダとメンバーIDを入れて" ..
+      "「保存」を押してください。"):format(tostring(app.profile))
   end
-  return ("共有フォルダが見つかりません: %s\n設定タブの「共有フォルダを変更…」で指定し直してください。")
+  return ("共有フォルダが見つかりません: %s\n設定タブの「共有フォルダを変更…」で選び直してください。")
     :format(tostring(app.shared_dir))
 end
 
@@ -253,9 +311,13 @@ function M.open(opts)
     pending_sendnow = false,
     pending_reload = false,
     pending_action = nil, -- function(app)。ダイアログを出す設定操作（描画の外で実行）
+    profile_form = nil,   -- 設定タブの入力欄（初回設定／追加／共有フォルダの変更）
+    dialog_deps = nil,    -- tpc_dialog 用。nil なら実機の reaper から作る
   }
 
   M.resolve_root(app)
+  -- 初回設定がまだなら、設定タブを開いて入力欄を出しておく（別のダイアログは出さない）
+  M.ensure_form(app)
   if not app.root then
     app.tab_force_settings = true
     app.settings_message = M.profile_hint(app)

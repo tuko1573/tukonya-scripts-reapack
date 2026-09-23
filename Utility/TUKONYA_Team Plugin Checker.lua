@@ -1,8 +1,9 @@
 --[[
 @description TUKONYA Team Plugin Checker
 @author tuko
-@version 1.0.0
+@version 1.0.1
 @changelog
+  1.0.1: 初回設定とプロファイル追加を設定タブの中の入力欄に変更。共有フォルダは「参照…」で選べる。
   1.0.0: Team Plugin Checker として汎用化。共有フォルダを利用者が選べるようにし、日本語パッチの更新は別品目に分離。
 @about
   # Team Plugin Checker
@@ -18,6 +19,7 @@
   [nomain] lib/tpc_bootstrap.lua
   [nomain] lib/tpc_collector.lua
   [nomain] lib/tpc_config.lua
+  [nomain] lib/tpc_dialog.lua
   [nomain] lib/tpc_ini.lua
   [nomain] lib/tpc_json.lua
   [nomain] lib/tpc_matcher.lua
@@ -64,10 +66,8 @@ local tpc_ui = require("tpc_ui")
 local store = boot.new_store(boot.log)
 local config = boot.new_config(store, boot.log)
 
--- 今のプロファイル（共有フォルダ・メンバーID・表示名）が未設定なら、ここで1回だけ聞く
--- （小窓を開いた後にダイアログが割り込まないように、描画を始める前に済ませる）。
--- キャンセルや入力の不備でも窓は開く（設定タブで案内する）。
-boot.ensure_profile(store, config, boot.log, { prompt = true })
+-- 今のプロファイル（共有フォルダ・メンバーID・表示名）が未設定なら、窓が設定タブを開いて
+-- その中に入力欄を出す（別のダイアログは出さない）。
 
 local ok, err = pcall(tpc_ui.open, {
   boot = boot,

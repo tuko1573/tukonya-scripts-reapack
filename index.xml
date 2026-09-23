@@ -45,6 +45,31 @@
   </category>
   <category name="Utility">
     <reapack name="TUKONYA_Team Plugin Checker.lua" type="script" desc="TUKONYA Team Plugin Checker">
+      <version name="1.0.1" author="tuko" time="2026-09-24T12:00:00Z">
+        <changelog><![CDATA[初回設定とプロファイル追加を設定タブの中の入力欄に変更。共有フォルダは「参照…」でフォルダを選べる。]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA_Team%20Plugin%20Checker.lua</source>
+        <source main="main" file="TUKONYA_Team Plugin Checker (Send Now).lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA_Team%20Plugin%20Checker%20(Send%20Now).lua</source>
+        <source main="main" file="TUKONYA_Team Plugin Checker (Install Startup).lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA_Team%20Plugin%20Checker%20(Install%20Startup).lua</source>
+        <source file="lib/tpc_bootstrap.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/tpc_bootstrap.lua</source>
+        <source file="lib/tpc_collector.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/tpc_collector.lua</source>
+        <source file="lib/tpc_config.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/tpc_config.lua</source>
+        <source file="lib/tpc_dialog.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/tpc_dialog.lua</source>
+        <source file="lib/tpc_ini.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/tpc_ini.lua</source>
+        <source file="lib/tpc_json.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/tpc_json.lua</source>
+        <source file="lib/tpc_matcher.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/tpc_matcher.lua</source>
+        <source file="lib/tpc_matcher_links.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/tpc_matcher_links.lua</source>
+        <source file="lib/tpc_normalize.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/tpc_normalize.lua</source>
+        <source file="lib/tpc_startup.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/tpc_startup.lua</source>
+        <source file="lib/tpc_store.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/tpc_store.lua</source>
+        <source file="lib/tpc_ui.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/tpc_ui.lua</source>
+        <source file="lib/tpc_ui_popups.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/tpc_ui_popups.lua</source>
+        <source file="lib/tpc_ui_settings.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/tpc_ui_settings.lua</source>
+        <source file="lib/tpc_ui_tabs.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/tpc_ui_tabs.lua</source>
+        <source file="lib/tpc_viewmodel.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/tpc_viewmodel.lua</source>
+        <source file="lib/tpc_viewmodel_actions.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/tpc_viewmodel_actions.lua</source>
+        <source file="lib/tpc_viewmodel_sort.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/tpc_viewmodel_sort.lua</source>
+        <source file="README.md">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/README.md</source>
+      </version>
       <version name="1.0.0" author="tuko" time="2026-09-24T00:00:00Z">
         <changelog><![CDATA[初版。ReaPack配布。チームや仲間うちで各自の所有プラグインを共有フォルダに集め、REAPER内の小窓（検索／整備／設定タブ）で検索・そのまま挿入できる。REAPER起動時の自動送信の登録に対応。REAPER 7、SWS、ReaImGui 0.10以降が必要。]]></changelog>
         <source main="main">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA_Team%20Plugin%20Checker.lua</source>
