@@ -26,9 +26,6 @@ DDP、複数フォーマットのwav、AAC(mp3)の同時書き出しに対応。
 同一フォルダ内に完成2mixの他instやminus1等別バージョンを配置すると同じ処理を通して自動で書き出せます。
 CD-TEXT情報はスクリプトから記入が可能なほか、スプレッドシートの情報を直接コピーすることも可能。
 https://docs.google.com/spreadsheets/d/1iKCHgF9pYBhRW_wEfzl_ZUpOZuDgvZpk-Vg-GIZw2Yo/copy
-このタブだけ、最上位に「24bit Dither」「16bit Dither」という名前のトラック（フォルダにしない・ミュートしない・FXボタンは切っておく）を作り、それぞれにディザープラグインを載せておく必要があります。足りないときは窓が何を直すか教えてくれます。
-
-実行するたびに実行記録（TUKONYA_Render_日付_時刻.log）がREAPERのリソースフォルダに残ります。止まったときは完了画面に出る文と、この記録を添えてください。
 
 ---
 
