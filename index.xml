@@ -8,6 +8,19 @@
 <index version="1" name="Tukonya Scripts">
   <category name="Rendering">
     <reapack name="TUKONYA_Render.lua" type="script" desc="TUKONYA RENDER">
+      <version name="2.8.1" author="tuko" time="2026-09-26T15:30:00Z">
+        <changelog><![CDATA[2.8.1: 2mix Render / 2mix Preview / Para + 2mix のディザーを Mastering と同じ方式に統一。2mix のビット深度で最上位の「24bit Dither」「16bit Dither」トラックを自動で使う（32/64bit float はディザー版なし）。この2本が無い曲は今までの「Dither」フォルダで動く。同梱テンプレートを新しい構造（24bit Dither / 16bit Dither、Dither フォルダ無し）に更新。同じ名前のファイルがあるのに連番が付かず上書きすることがあった不具合を修正（プロジェクトのレンダー設定がステム用のとき）。説明書を短くした。]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/TUKONYA_Render.lua</source>
+        <source file="tukonya_render_model.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_render_model.lua</source>
+        <source file="tukonya_render_core.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_render_core.lua</source>
+        <source file="tukonya_render_settings.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_render_settings.lua</source>
+        <source file="tukonya_render_store.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_render_store.lua</source>
+        <source file="tukonya_vstpreset_lib.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_vstpreset_lib.lua</source>
+        <source file="tukonya_mastering_lib.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_mastering_lib.lua</source>
+        <source file="README.md">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/README.md</source>
+        <source file="template/TUKONYA_RENDER_template.RPP">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/template/TUKONYA_RENDER_template.RPP</source>
+        <source file="template/Media/PREVIEWONLY.wav">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/template/Media/PREVIEWONLY.wav</source>
+      </version>
       <version name="2.7.3" author="tuko" time="2026-09-26T12:30:00Z">
         <changelog><![CDATA[2.7.3: 5つ目のタブ「Mastering」（48/24 WAV・44.1/16・AAC/MP3・DDP を同時に書き出し、曲フォルダの別バージョンも自動、CD-TEXT はスプレッドシートから取り込み可）。全タブに「FX処理のサンプルレート」（既定はプロジェクトの動作レート）。2mix Render / Preview / Para + 2mix の納品段は 64bit float の中間を1回作ってから派生させる方式に変更。書き出し中は「書き出したファイルをプロジェクトに入れる」を切る。別の波形が選ばれたままでも止まらない。窓は曲ごとに最後に開いたタブを覚える（初回は 2mix Render）。設定の「既定として保存」が再起動で消える不具合を修正。Mac で確認済み、Windows と 96kHz は未確認。]]></changelog>
         <source main="main">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/TUKONYA_Render.lua</source>

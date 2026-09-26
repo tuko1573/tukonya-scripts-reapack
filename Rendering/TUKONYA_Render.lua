@@ -24,7 +24,7 @@ local Model = dofile(SCRIPT_DIR .. "tukonya_render_model.lua")
 local S     = Model.S
 local Store = Model.Store
 
-local VERSION = "2.7.3"            -- 配布物の版。窓の見出しに出る
+local VERSION = "2.8.1"            -- 配布物の版。窓の見出しに出る
 local NAME    = "TUKONYA RENDER"
 local TITLE   = NAME .. "  v" .. VERSION   -- 窓の見出し（ImGuiの窓の名前でもある）
 local NS      = "TUKONYA_RENDER"

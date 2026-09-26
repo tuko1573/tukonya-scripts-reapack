@@ -23,7 +23,7 @@
 local DIR = debug.getinfo(1, "S").source:match("@(.*[/\\])") or ""
 local S = dofile(DIR .. "tukonya_render_settings.lua")
 
-local C = { DIR = DIR, Settings = S, VERSION = "2.7.3" }
+local C = { DIR = DIR, Settings = S, VERSION = "2.8.1" }
 
 -- 親経由パラ（規則4）で「音が混じるかもしれない」ときに、窓からの実行だけ
 -- 「続行／キャンセル」を出すかどうか。将来やめるときはここを false にする。
@@ -53,6 +53,61 @@ local function find_track_by_name(name)
     if nm == name then return tr end
   end
   return nil
+end
+
+-- v2.8.0: 以下の4つは Mastering の段から上へ移した（2mix の 3 タブのディザーの置き場でも使うため。中身は同じ）
+-- 名前で探す（大文字小文字を区別しない。前後の空白も無視）。他のタブの find_track_by_name は完全一致のまま。
+local function find_track_ci(name)
+  local want = tostring(name or ""):gsub("^%s+", ""):gsub("%s+$", ""):lower()
+  for i = 0, reaper.CountTracks(0) - 1 do
+    local tr = reaper.GetTrack(0, i)
+    local _, nm = reaper.GetTrackName(tr)
+    if tostring(nm or ""):gsub("^%s+", ""):gsub("%s+$", ""):lower() == want then return tr end
+  end
+  return nil
+end
+C.find_track_ci = find_track_ci
+C.dither_host_kind, C.dither_plan = S.dither_host_kind, S.dither_plan   -- v2.8.0（REAPER を呼ばない）
+
+-- トラックの状態（Dither の2本の点検用）
+local function track_shape(tr)
+  if not tr then return nil end
+  return {
+    folder  = to_int(reaper.GetMediaTrackInfo_Value(tr, "I_FOLDERDEPTH")) == 1,
+    muted   = reaper.GetMediaTrackInfo_Value(tr, "B_MUTE") > 0.5,
+    toplevel = reaper.GetParentTrack(tr) == nil,
+    items   = reaper.CountTrackMediaItems(tr),
+  }
+end
+
+-- アイテムを置く（自動フェードなし・素通し）
+local function mst_put_item(tr, path, pos, frames, srate)
+  local it = reaper.AddMediaItemToTrack(tr)
+  local tk = it and reaper.AddTakeToMediaItem(it)
+  local src = reaper.PCM_Source_CreateFromFileEx(path, false)
+  if not (it and tk and src) then abort("64bitの中間ファイルをアイテムとして置けませんでした。中断します。\n" .. tostring(path)) end
+  reaper.SetMediaItemTake_Source(tk, src)
+  reaper.SetMediaItemInfo_Value(it, "D_POSITION", pos)
+  reaper.SetMediaItemInfo_Value(it, "D_LENGTH", frames / srate)
+  for _, k in ipairs({ "D_FADEINLEN", "D_FADEOUTLEN", "D_FADEINLEN_AUTO", "D_FADEOUTLEN_AUTO", "D_SNAPOFFSET" }) do
+    reaper.SetMediaItemInfo_Value(it, k, 0)
+  end
+  reaper.SetMediaItemInfo_Value(it, "D_VOL", 1.0)
+  reaper.SetMediaItemInfo_Value(it, "B_MUTE", 0)
+  reaper.SetMediaItemInfo_Value(it, "B_LOOPSRC", 0)
+  reaper.SetMediaItemTakeInfo_Value(tk, "D_STARTOFFS", 0)
+  reaper.SetMediaItemTakeInfo_Value(tk, "D_VOL", 1.0)
+  reaper.SetMediaItemTakeInfo_Value(tk, "D_PAN", 0.0)
+  reaper.SetMediaItemTakeInfo_Value(tk, "D_PLAYRATE", 1.0)
+  reaper.SetMediaItemTakeInfo_Value(tk, "I_CHANMODE", 0)
+  reaper.UpdateItemInProject(it)
+  return it
+end
+
+local function mst_remute(list)
+  for _, tr in ipairs(list or {}) do
+    if reaper.ValidatePtr(tr, "MediaTrack*") then reaper.SetMediaTrackInfo_Value(tr, "B_MUTE", 1) end
+  end
 end
 
 local function find_reainsert(master, match)
@@ -521,6 +576,15 @@ function Job:set_dither(on)
   if self.DITHER and reaper.ValidatePtr(self.DITHER, "MediaTrack*") then
     reaper.SetMediaTrackInfo_Value(self.DITHER, "I_FXEN", on and 1 or 0)
   end
+  -- v2.8.0: 『24bit Dither』／『16bit Dither』トラック（新しい置き場。旧フォルダとは同時に使わない）
+  if self.DHOST and reaper.ValidatePtr(self.DHOST, "MediaTrack*") then
+    reaper.SetMediaTrackInfo_Value(self.DHOST, "I_FXEN", on and 1 or 0)
+  end
+end
+
+-- v2.8.0: ディザー版（Pass D）を出すか。prepare で決めた道（self.dither_plan）だけを見る。
+function Job:makes_pass_d()
+  return S.plan_makes_pass_d(self.dither_plan)
 end
 
 -- REAPERのマスタートラックのFXボタン。on=false で切る、on=true で控えた値へ戻す。
@@ -585,8 +649,9 @@ end
 
 -- ディザー版を出す直前の確認。止めずに注意を積むだけ。
 function Job:check_dither_sanity()
-  if self.S.DITHER_MODE ~= "track" or not self.DITHER then return end
+  if self.S.DITHER_MODE ~= "track" or not (self.DITHER or self.DHOST) then return end
   local D, name = self.DITHER, self.S.DITHER_TRACK_NAME
+  if self.DHOST then D, name = self.DHOST, self.DHOST_NAME end   -- v2.8.0: 新しい置き場を見る
   local n = reaper.TrackFX_GetCount(D)
   local enabled, named = 0, false
   for i = 0, n - 1 do
@@ -1175,6 +1240,17 @@ function Job:cleanup()
   if self.DITHER and reaper.ValidatePtr(self.DITHER, "MediaTrack*") and r.dither_fxen ~= nil then
     reaper.SetMediaTrackInfo_Value(self.DITHER, "I_FXEN", r.dither_fxen)
   end
+  -- v2.8.0: 『24bit Dither』／『16bit Dither』トラック。Pass D の途中で落ちたときは、置いたアイテムを消してから
+  -- FXボタンを元へ戻す（ミュート・ソロは下の一覧の戻しで元へ戻る）。
+  if self.DHOST and reaper.ValidatePtr(self.DHOST, "MediaTrack*") then
+    if self.DHOST_ITEM and reaper.ValidatePtr(self.DHOST_ITEM, "MediaItem*") then
+      reaper.DeleteTrackMediaItem(self.DHOST, self.DHOST_ITEM)
+    end
+    self.DHOST_ITEM = nil
+  end
+  for _, x in ipairs(r.dhosts or {}) do
+    if reaper.ValidatePtr(x.tr, "MediaTrack*") then reaper.SetMediaTrackInfo_Value(x.tr, "I_FXEN", x.fxen) end
+  end
   self:set_rmaster_fx(true)
   for _, tr in ipairs(self.created_tracks) do
     if reaper.ValidatePtr(tr, "MediaTrack*") then reaper.DeleteTrack(tr) end
@@ -1255,12 +1331,54 @@ function Job:prepare()
       abort(("『%s』トラックが見つかりません。MASTERの外側に作ってください。"):format(cfg.PREVIEW_TRACK_NAME))
     end
   end
-  self.DITHER = find_track_by_name(cfg.DITHER_TRACK_NAME)
-  if cfg.DITHER_MODE == "track" and not self.DITHER then
-    self:warn(("『%s』トラックが見つからなかったため、ディザー無しの1組だけを書き出しました。"):format(cfg.DITHER_TRACK_NAME))
+  -- ----- ディザーの置き場（v2.8.0、docs/v280_dither_notes.md）-----
+  -- 「Ditherトラック」のとき: 2mix のビット深度に合う『24bit Dither』／『16bit Dither』トラック（一番上の段の普通の
+  -- トラック）があればそれ。無ければ旧方式の『Dither』フォルダ（v2.7.x と同じ道）。どちらも無ければディザー版なし。
+  -- 32/64 bit float は、どの方式でもディザー版を出さない。
+  local hkind = S.dither_host_kind(cfg.MASTER_BITS)
+  local hname = (hkind == "d24") and cfg.DITHER24_TRACK_NAME or ((hkind == "d16") and cfg.DITHER16_TRACK_NAME or nil)
+  local host = (cfg.DITHER_MODE == "track" and hname) and find_track_ci(hname) or nil
+  local legacy = find_track_by_name(cfg.DITHER_TRACK_NAME)
+  self.dither_plan = S.dither_plan(cfg.DITHER_MODE, cfg.MASTER_BITS, host ~= nil, legacy ~= nil)
+  if self.dither_plan == "host" then
+    self.DITHER = nil                        -- 旧フォルダは使わない（仮トラックは一番上の段に作る）
+    self.DHOST, self.DHOST_NAME = host, hname
+    self.LEGACY_UNUSED = legacy              -- 旧フォルダも残っていれば、FXボタンだけ切っておく（最後に戻す）
+  else
+    self.DITHER = legacy                     -- v2.7.x と同じ（方式に関わらず、あれば仮トラックの置き場になる）
   end
-  self:log("ディザーの方式: %s / 『%s』トラック: %s", cfg.DITHER_MODE, cfg.DITHER_TRACK_NAME,
-    self.DITHER and "あり" or "なし")
+  local plan_label
+  if self.dither_plan == "host" then plan_label = ("『%s』トラック"):format(hname)
+  elseif self.dither_plan == "legacy" then plan_label = ("旧『%s』フォルダ"):format(cfg.DITHER_TRACK_NAME)
+  elseif self.dither_plan == "reaper" then plan_label = ("REAPERのディザー（bits=%s）"):format(tostring(cfg.REAPER_DITHER_BITS))
+  elseif self.dither_plan == "float" then plan_label = "なし（32/64bit float）"
+  elseif self.dither_plan == "none" then plan_label = "なし（ディザー＝なし）"
+  else plan_label = "なし（ディザーのトラックが無い）" end
+  self:log("ディザーの方式: %s（設定 %s / 2mixのビット深度 %s / 旧『%s』: %s）", plan_label, cfg.DITHER_MODE,
+    S.wav_format_label(cfg.MASTER_BITS), cfg.DITHER_TRACK_NAME, legacy and "あり" or "なし")
+  if self.dither_plan == "float" then
+    self:log("32/64bit float のためディザー版は書き出しません")
+  elseif self.dither_plan == "missing" then
+    if hname then
+      self:warn(("『%s』トラックも旧『%s』フォルダも見つからなかったため、ディザー無しの1組だけを書き出しました。")
+        :format(hname, cfg.DITHER_TRACK_NAME))
+    else
+      self:warn(("『%s』トラックが見つからなかったため、ディザー無しの1組だけを書き出しました。"):format(cfg.DITHER_TRACK_NAME))
+    end
+  end
+  if self.DHOST then
+    -- 形の点検（Mastering の置き場と同じ決まり）。親があると、その親の処理が Pass M と Pass D で二重にかかるので止める。
+    local sh = track_shape(self.DHOST)
+    if not sh.toplevel then
+      abort(("『%s』が一番上の段にありません。上のフォルダの処理が二重にかかるので、一番上の段へ移してください。中断します。"):format(hname))
+    end
+    if sh.folder then
+      self:warn(("『%s』がフォルダになっています（子トラックがあります）。子を持たない普通のトラックにすることをおすすめします。"):format(hname))
+    end
+    if reaper.GetMediaTrackInfo_Value(self.DHOST, "B_MAINSEND") < 0.5 then
+      self:warn(("『%s』トラックのマスター送り（親への送り）が切れています。ディザー版が無音になる可能性があります。"):format(hname))
+    end
+  end
 
   -- MASTERフェーダー／パンが素通しか確認。
   -- ハード通しと仕上げでMASTERを2回通るので、0dBでないと音量が二重にかかる。
@@ -1301,6 +1419,21 @@ function Job:prepare()
   if self.DITHER then
     self.restore.dither_fxen = reaper.GetMediaTrackInfo_Value(self.DITHER, "I_FXEN")
     self:set_dither(false)
+  end
+  -- v2.8.0: 『24bit Dither』／『16bit Dither』トラックも、あれば（使う・使わないに関わらず）FXボタンを控えて切る。
+  -- 空のトラックでもディザーのプラグインは雑音を足しうるので、Pass D で使う1本を、その書き出しのあいだだけ入れる。
+  self.restore.dhosts = {}
+  local cands = { find_track_ci(cfg.DITHER24_TRACK_NAME), find_track_ci(cfg.DITHER16_TRACK_NAME), self.LEGACY_UNUSED }
+  for i = 1, 3 do
+    local tr = cands[i]
+    if tr and tr ~= self.DITHER then
+      local seen = false
+      for _, x in ipairs(self.restore.dhosts) do if x.tr == tr then seen = true end end
+      if not seen then
+        self.restore.dhosts[#self.restore.dhosts + 1] = { tr = tr, fxen = reaper.GetMediaTrackInfo_Value(tr, "I_FXEN") }
+        reaper.SetMediaTrackInfo_Value(tr, "I_FXEN", 0)
+      end
+    end
   end
 
   -- ReaInsert検出（有効状態で存在すればハードモード）
@@ -1372,14 +1505,35 @@ function Job:resolve_suffix(build_set)
       abort("同名ファイルの空き番号が見つかりませんでした（-001〜-999 すべて使用中です）。")
     end
   end
+  if n > 0 then self:log("同じ名前のファイルがあるので連番を付ける: -%03d", n) end
   return (n == 0) and "" or ("-" .. string.format("%03d", n))
 end
 
 -- 名前だけ解決する（パターンと形式を当てて RENDER_TARGETS を読む）
+-- v2.8.1（2026-09-26 つこさんの実案件 Preview）: ここはレンダー設定がまだ「元の設定」（ステム用の
+-- 「選択トラック」など）のまま呼ばれることがあり、選ばれたトラックが無いと REAPER は名前を 1 つも返さない。
+-- すると「同じ名前のファイルは無い」と誤って判断し、連番を付けずに上書きしていた。
+-- 名前を解くあいだだけ、マスターミックス＋範囲（時間選択が無ければ曲全体）に切り替えて解き、元に戻す。
+-- それでも名前が返らなければ、黙って進めずに止める。
 function Job:resolve_target(pattern, fmt)
+  local rs0 = reaper.GetSetProjectInfo(0, "RENDER_SETTINGS", 0, false)
+  local bf0 = reaper.GetSetProjectInfo(0, "RENDER_BOUNDSFLAG", 0, false)
+  reaper.GetSetProjectInfo(0, "RENDER_SETTINGS", self.master_mix or 0, true)
+  if self.RANGE_S and self.RANGE_E and self.RANGE_E > self.RANGE_S then
+    reaper.GetSetProjectInfo(0, "RENDER_BOUNDSFLAG", 2, true)
+    self:apply_range()
+  else
+    reaper.GetSetProjectInfo(0, "RENDER_BOUNDSFLAG", 1, true)
+  end
   self:set_pattern(pattern)
   self:apply_format(fmt)
-  return self:target()
+  local t = self:target()
+  reaper.GetSetProjectInfo(0, "RENDER_SETTINGS", rs0, true)
+  reaper.GetSetProjectInfo(0, "RENDER_BOUNDSFLAG", bf0, true)
+  if not t then
+    abort(("書き出し先の名前を解けませんでした（パターン「%s」）。中断します。"):format(tostring(pattern)))
+  end
+  return t
 end
 
 -- ===========================================================================
@@ -1753,6 +1907,56 @@ function Job:passm_derive(fmt, pattern, want)
   return final
 end
 
+-- v2.8.0: 『24bit Dither』／『16bit Dither』トラックで Pass D を1本書く。戻り値: 書いたファイル。
+-- 置いたアイテム・FXボタン・ミュート・ソロは、書き終えたらすぐ戻す。途中で落ちたときは cleanup が
+-- アイテムを消し（self.DHOST_ITEM）、FXボタン（restore.dhosts）とミュート・ソロ（一覧）を戻す。
+function Job:dhost_pass_d(pat, wav_m, wav_d)
+  local host, hname = self.DHOST, self.DHOST_NAME
+  local pos = self.start_pos or 0.0
+  local frames, srate = self.passm_frames, self.passm_srate
+  if not (frames and srate and srate > 0) then abort("Pass D の前に 64bit の中間の長さが分かりませんでした。中断します。") end
+  local fin = pos + frames / srate
+  -- 置き場に元からアイテムがあり、書き出す範囲に重なっていれば注意（選んだアイテムだけが鳴るはずだが、念のため）
+  if not self.dhost_items_warned then
+    for i = 0, reaper.CountTrackMediaItems(host) - 1 do
+      local it = reaper.GetTrackMediaItem(host, i)
+      local a = reaper.GetMediaItemInfo_Value(it, "D_POSITION")
+      local b = a + reaper.GetMediaItemInfo_Value(it, "D_LENGTH")
+      if a < fin and b > pos then
+        self.dhost_items_warned = true
+        self:warn(("『%s』トラックに元からアイテムがあります。書き出しに混ざる可能性があります"):format(hname))
+        break
+      end
+    end
+  end
+  local it = mst_put_item(host, wav_m, pos, frames, srate)
+  self.DHOST_ITEM = it
+  local keep_item = self.PASSM_ITEM
+  self.PASSM_ITEM = it                          -- passm_derive はこのアイテムだけを選び直す
+  local hun = self:mst_unmute_path(host)
+  if #hun > 0 then self:log("『%s』トラックのミュートを書き出しのあいだ外した", hname) end
+  local solo0 = reaper.GetMediaTrackInfo_Value(host, "I_SOLO")
+  local soloed = false
+  if reaper.AnyTrackSolo(0) and solo0 == 0 then
+    -- どこかがソロ（Pass M の仮トラックなど）だと置き場が鳴らない。書き出しのあいだだけソロにする
+    reaper.SetMediaTrackInfo_Value(host, "I_SOLO", 2)
+    soloed = true
+    self:log("ソロ中のトラックがあるため、『%s』トラックを書き出しのあいだソロにした", hname)
+  end
+  self:check_dither_sanity()
+  self:set_dither(true)
+  self:log("Pass D（ディザーあり / 『%s』トラック / Pass M から）: %s", hname, tostring(wav_d))
+  -- [試験用の注入点 host]（dither_rig の run_rig.sh は「[試験用の注入点]」の最初の1つを置き換えるので、名前を分けてある）
+  local got = self:passm_derive(self.FMT_MASTER_D, pat.d, wav_d)
+  self:set_dither(false)
+  if reaper.ValidatePtr(it, "MediaItem*") then reaper.DeleteTrackMediaItem(host, it) end
+  self.DHOST_ITEM = nil
+  self.PASSM_ITEM = keep_item
+  mst_remute(hun)
+  if soloed then reaper.SetMediaTrackInfo_Value(host, "I_SOLO", solo0) end
+  return got
+end
+
 -- 納品物の書き出し（Pass M → Pass U ＋ Pass D）。3タブで共通の心臓部。
 --   pat.u        … Pass U（ディザー無し）の書き出し先パターン
 --   pat.keep_u   … Pass U のWAVを納品物として残すか（false なら中間ファイル扱いで消す）
@@ -1772,7 +1976,9 @@ function Job:render_deliverable(pat)
   reaper.GetSetProjectInfo(0, "RENDER_BOUNDSFLAG", self.bounds_flag, true)
 
   -- ディザーを掛けない条件: 「なし」を選んだか、「Ditherトラック」なのにトラックが無いか
-  local no_dither = (cfg.DITHER_MODE == "none") or (cfg.DITHER_MODE == "track" and not self.DITHER)
+  -- v2.8.0: 条件は prepare で決めた道（self.dither_plan）にまとめた。旧フォルダの道では v2.7.x と同じ結果。
+  -- 32/64 bit float は、どの方式でもディザー版を出さない。
+  local no_dither = not self:makes_pass_d()
   -- v2.7.0: FX処理と出力のレートが違うときは、ディザーなしでも中間（Pass M）を通す
   local fx_ne_out = (self.FXR ~= nil and self.OUTR ~= nil and self.FXR ~= self.OUTR)
   local use_passm = (not no_dither) or fx_ne_out
@@ -1866,10 +2072,24 @@ function Job:render_deliverable(pat)
   end
 
   if no_dither then
-    self:log("%s のため、ディザー版は書き出しません",
-      (cfg.DITHER_MODE == "none") and "ディザー＝なし"
-      or ("『" .. tostring(cfg.DITHER_TRACK_NAME) .. "』トラックが無い"))
+    if self.dither_plan == "float" then
+      self:log("32/64bit float のためディザー版は書き出しません")
+    else
+      self:log("%s のため、ディザー版は書き出しません",
+        (cfg.DITHER_MODE == "none") and "ディザー＝なし"
+        or ("『" .. tostring(cfg.DITHER_TRACK_NAME) .. "』トラックが無い"))
+    end
     if wav_m then self:passm_teardown(wav_m) end
+    return
+  end
+
+  -- ----- Pass D（v2.8.0 の新しい置き場: 『24bit Dither』／『16bit Dither』トラック）-----
+  -- 64bit の中間を置き場のトラックにもう1つアイテムとして置き、それだけを選んで「選択アイテムをマスター経由」で
+  -- 書き出す（通り道は アイテム → 置き場の FX → REAPER マスター。Mastering の 48/24 と同じ形）。
+  if self.dither_plan == "host" and self.DHOST then
+    wav_d = self:dhost_pass_d(pat, wav_m, wav_d)
+    self:add_produced(wav_d)
+    self:passm_teardown(wav_m)
     return
   end
 
@@ -2082,7 +2302,7 @@ function FLOW.mix2(j)
     set[#set + 1] = j:secondary(wav_u)
     set[#set + 1] = j:secondary(j:resolve_target(PAT_AAC .. suf, j.FMT_MASTER))
     -- ディザー版が出るのは「Ditherトラックがある」ときだけ（無ければ上の1組だけ）
-    if not (cfg.DITHER_MODE == "none" or (cfg.DITHER_MODE == "track" and not j.DITHER)) then
+    if j:makes_pass_d() then   -- v2.8.0: prepare で決めた道（旧フォルダでは v2.7.x と同じ）
       set[#set + 1] = j:resolve_target(PAT_D .. suf, j.FMT_MASTER_D)
     end
     return set
@@ -2264,7 +2484,7 @@ function FLOW.para(j)
       set[#set + 1] = j:secondary(j:resolve_target(mpat(NAME_AAC .. suf), j.FMT_MASTER))
     end
     -- ディザー版が出るのは「Ditherトラックがある」ときだけ（無ければ上の1組だけ）
-    if not (cfg.DITHER_MODE == "none" or (cfg.DITHER_MODE == "track" and not j.DITHER)) then
+    if j:makes_pass_d() then   -- v2.8.0: prepare で決めた道（旧フォルダでは v2.7.x と同じ）
       set[#set + 1] = j:resolve_target(mpat(NAME_D .. suf), j.FMT_MASTER_D)
     end
     return set
@@ -3088,33 +3308,12 @@ local function mstore()
 end
 C.mlib, C.mstore = mlib, mstore
 
--- 名前で探す（大文字小文字を区別しない。前後の空白も無視）。他のタブの find_track_by_name は完全一致のまま。
-local function find_track_ci(name)
-  local want = tostring(name or ""):gsub("^%s+", ""):gsub("%s+$", ""):lower()
-  for i = 0, reaper.CountTracks(0) - 1 do
-    local tr = reaper.GetTrack(0, i)
-    local _, nm = reaper.GetTrackName(tr)
-    if tostring(nm or ""):gsub("^%s+", ""):gsub("%s+$", ""):lower() == want then return tr end
-  end
-  return nil
-end
-C.find_track_ci = find_track_ci
 
 local function mst_name(tr)
   local _, nm = reaper.GetTrackName(tr)
   return tostring(nm or "")
 end
 
--- トラックの状態（Dither の2本の点検用）
-local function track_shape(tr)
-  if not tr then return nil end
-  return {
-    folder  = to_int(reaper.GetMediaTrackInfo_Value(tr, "I_FOLDERDEPTH")) == 1,
-    muted   = reaper.GetMediaTrackInfo_Value(tr, "B_MUTE") > 0.5,
-    toplevel = reaper.GetParentTrack(tr) == nil,
-    items   = reaper.CountTrackMediaItems(tr),
-  }
-end
 
 -- ----- エンベロープ（オートメーション）の有効・無効（v2.6.3）-----
 -- REAPER 7.80 では GetSetEnvelopeInfo_String の "ACTIVE" で読み書きできる。効かなかったときは
@@ -3496,29 +3695,6 @@ function C.mst_has_meta(meta)
   return false
 end
 
--- アイテムを置く（自動フェードなし・素通し）
-local function mst_put_item(tr, path, pos, frames, srate)
-  local it = reaper.AddMediaItemToTrack(tr)
-  local tk = it and reaper.AddTakeToMediaItem(it)
-  local src = reaper.PCM_Source_CreateFromFileEx(path, false)
-  if not (it and tk and src) then abort("64bitの中間ファイルをアイテムとして置けませんでした。中断します。\n" .. tostring(path)) end
-  reaper.SetMediaItemTake_Source(tk, src)
-  reaper.SetMediaItemInfo_Value(it, "D_POSITION", pos)
-  reaper.SetMediaItemInfo_Value(it, "D_LENGTH", frames / srate)
-  for _, k in ipairs({ "D_FADEINLEN", "D_FADEOUTLEN", "D_FADEINLEN_AUTO", "D_FADEOUTLEN_AUTO", "D_SNAPOFFSET" }) do
-    reaper.SetMediaItemInfo_Value(it, k, 0)
-  end
-  reaper.SetMediaItemInfo_Value(it, "D_VOL", 1.0)
-  reaper.SetMediaItemInfo_Value(it, "B_MUTE", 0)
-  reaper.SetMediaItemInfo_Value(it, "B_LOOPSRC", 0)
-  reaper.SetMediaItemTakeInfo_Value(tk, "D_STARTOFFS", 0)
-  reaper.SetMediaItemTakeInfo_Value(tk, "D_VOL", 1.0)
-  reaper.SetMediaItemTakeInfo_Value(tk, "D_PAN", 0.0)
-  reaper.SetMediaItemTakeInfo_Value(tk, "D_PLAYRATE", 1.0)
-  reaper.SetMediaItemTakeInfo_Value(tk, "I_CHANMODE", 0)
-  reaper.UpdateItemInProject(it)
-  return it
-end
 
 local function mst_peaks_of(self, wav)
   self.passm_peaks = self.passm_peaks or {}
@@ -3718,11 +3894,6 @@ function Job:mst_unmute_path(tr)
     cur = reaper.GetParentTrack(cur)
   end
   return list
-end
-local function mst_remute(list)
-  for _, tr in ipairs(list or {}) do
-    if reaper.ValidatePtr(tr, "MediaTrack*") then reaper.SetMediaTrackInfo_Value(tr, "B_MUTE", 1) end
-  end
 end
 
 local function dir_of(p) return (tostring(p or ""):match("^(.*)[/\\][^/\\]+$")) end

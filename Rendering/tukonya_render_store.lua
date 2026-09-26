@@ -101,6 +101,29 @@ function M.resolve(tab, keys, detected, api)
   if tab == "mastering" then proj = S.migrate_mastering(proj) end
   overlay(proj, "project")
 
+  -- v2.8.0: 『24bit Dither』／『16bit Dither』の名前は全タブ共通になった。このタブの記憶（全体の既定・この曲）の
+  -- どちらにも無ければ、Mastering の記憶（全体の既定 → この曲の順に強く）に残っている値を引き継ぐ。
+  if tab ~= "mastering" then
+    local want = {}
+    for _, k in ipairs(keys) do
+      for _, sk in ipairs(S.SHARED_DITHER_KEYS) do if k == sk then want[k] = true end end
+    end
+    if next(want) then
+      local own = {}
+      for k in pairs(want) do
+        if (type(wide) == "table" and wide[k] ~= nil) or (type(proj) == "table" and proj[k] ~= nil) then own[k] = true end
+      end
+      local mw = M.load_wide("mastering", api)
+      local mp = M.load_project("mastering", api)
+      for _, layer in ipairs({ { mw, "wide" }, { mp, "project" } }) do
+        local got = S.inherit_shared_dither(nil, layer[1])
+        for k, v in pairs(got) do
+          if want[k] and not own[k] then out[k] = v; src[k] = layer[2] end
+        end
+      end
+    end
+  end
+
   -- 値がおかしければ初期値へ戻す（記憶が古い版で書かれていた場合など）
   local merged, mw = S.merge(tab, out)
   for _, w in ipairs(mw or {}) do warns[#warns + 1] = w end
