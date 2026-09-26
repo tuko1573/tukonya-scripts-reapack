@@ -18,11 +18,19 @@ local Store = dofile(DIR .. "tukonya_render_store.lua")
 
 local M = { VERSION = "0.2.0", S = S, Store = Store }
 
+-- 骨組み（core）は必要になったときに一度だけ読む（Mastering の読み取りと、読むだけの道具が使う）
+local CORE
+local function core()
+  if not CORE then CORE = dofile(DIR .. "tukonya_render_core.lua") end
+  return CORE
+end
+
 M.TAB_LABELS = {
   { tab = "mix2",    label = "2mix Render",    ready = true },
   { tab = "preview", label = "2mix Preview",   ready = true },
   { tab = "para",    label = "Para + 2mix",    ready = true },
   { tab = "hwprint", label = "Hardware Print", ready = true },
+  { tab = "mastering", label = "Mastering",     ready = true },
 }
 
 -- ===========================================================================
@@ -42,6 +50,9 @@ M.SRATE_OPTIONS = {
   { 44100, "44100 Hz" }, { 48000, "48000 Hz" }, { 88200, "88200 Hz" },
   { 96000, "96000 Hz" }, { 176400, "176400 Hz" }, { 192000, "192000 Hz" },
 }
+-- Mastering の FX処理のサンプルレート（v2.6.3）。0 は書き出しのときにスクリプトが実際の数に直す（0 のままでは書かない）
+M.MST_PROC_SRATE_OPTIONS = { { 0, "プロジェクトの動作レート（自動）" } }
+for i = 2, #M.SRATE_OPTIONS do M.MST_PROC_SRATE_OPTIONS[#M.MST_PROC_SRATE_OPTIONS + 1] = M.SRATE_OPTIONS[i] end
 
 -- リサンプルモード（サンプルレートを変えるときの変換のやり方）。
 -- 並びと言葉は REAPER 自身に聞く（Resample_EnumModes）。REAPERの外（素のLuaの試験）では
@@ -98,9 +109,10 @@ M.ROWS = {
     { kind = "section", label = "出力設定", rows = {
       { kind = "combo", key = "MASTER_BITS", label = "2mixのビット深度", options = M.WAV_OPTIONS },
       { kind = "combo", key = "STEM_BITS",   label = "paraのビット深度", options = M.WAV_OPTIONS },
-      { kind = "combo", key = "SRATE",       label = "サンプルレート", options = M.SRATE_OPTIONS },
+      { kind = "combo", key = "SRATE",       label = "出力のサンプルレート", options = M.SRATE_OPTIONS },
       { kind = "combo", key = "FORMAT2",     label = "同時レンダーの形式",
         options = { { "none", "なし" }, { "aac", "AAC（.m4a）" }, { "mp3", "MP3（.mp3）" } } },
+      { kind = "combo", key = "FX_SRATE",    label = "FX処理のサンプルレート", options = M.MST_PROC_SRATE_OPTIONS, note = "fx_rate" },
       { kind = "combo", key = "SONG_NAME_RULE", label = "曲名", note = "song",
         -- 「入力...」を選んだときだけ、右に文字を書く欄が出る
         extra = { key = "SONG_NAME_CUSTOM", when = "custom" },
@@ -160,9 +172,10 @@ M.ROWS = {
 
     { kind = "section", label = "出力設定", rows = {
       { kind = "combo", key = "MASTER_BITS", label = "2mixのビット深度", options = M.WAV_OPTIONS },
-      { kind = "combo", key = "SRATE",       label = "サンプルレート", options = M.SRATE_OPTIONS },
+      { kind = "combo", key = "SRATE",       label = "出力のサンプルレート", options = M.SRATE_OPTIONS },
       { kind = "combo", key = "FORMAT2",     label = "同時レンダーの形式",
         options = { { "none", "なし" }, { "aac", "AAC（.m4a）" }, { "mp3", "MP3（.mp3）" } } },
+      { kind = "combo", key = "FX_SRATE",    label = "FX処理のサンプルレート", options = M.MST_PROC_SRATE_OPTIONS, note = "fx_rate" },
     } },
 
     { kind = "section", label = "詳細", collapsible = true, rows = {
@@ -197,9 +210,10 @@ M.ROWS = {
 
     { kind = "section", label = "出力設定", rows = {
       { kind = "combo", key = "MASTER_BITS", label = "2mixのビット深度", options = M.WAV_OPTIONS },
-      { kind = "combo", key = "SRATE",       label = "サンプルレート", options = M.SRATE_OPTIONS },
+      { kind = "combo", key = "SRATE",       label = "出力のサンプルレート", options = M.SRATE_OPTIONS },
       { kind = "combo", key = "FORMAT2",     label = "同時レンダーの形式",
         options = { { "none", "なし" }, { "aac", "AAC（.m4a）" }, { "mp3", "MP3（.mp3）" } } },
+      { kind = "combo", key = "FX_SRATE",    label = "FX処理のサンプルレート", options = M.MST_PROC_SRATE_OPTIONS, note = "fx_rate" },
     } },
 
     { kind = "section", label = "詳細", collapsible = true, rows = {
@@ -208,6 +222,39 @@ M.ROWS = {
       { kind = "num",   key = "DUCK_PRE",     label = "声の何秒手前で下げ切るか", step = 0.05, fmt = "%.3f" },
       { kind = "num",   key = "DUCK_FADE_IN", label = "下げるのにかける秒数",   step = 0.05, fmt = "%.3f" },
       { kind = "num",   key = "DUCK_RELEASE", label = "戻すのにかける秒数",     step = 0.05, fmt = "%.3f" },
+    } },
+  },
+
+  -- ===== Mastering（計画書/計画書_mastering.md）=====
+  -- 2MIXBUS 直下の曲ごとに、出力の一覧（WAV・DDP・AAC・MP3）を書き出す（v2.5.0）。
+  -- 出力の一覧は kind="outputs"、曲目情報（CD-TEXT）の欄は kind="meta"（どちらも窓が専用に描く）。
+  mastering = {
+    { kind = "section", label = "出力", rows = {
+      { kind = "path",  key = "OUTPUT_DIR",  label = "ディレクトリ:",
+        hint = "空の場合、プロジェクトパスを使います" },
+      { kind = "outputs", key = "OUTPUTS" },
+    } },
+
+    { kind = "section", label = "楽曲リスト", rows = {
+      { kind = "info",  note = "mst_songs",  label = "トラック" },
+    } },
+
+    { kind = "section", label = "出力設定", rows = {
+      { kind = "combo", key = "SRATE",       label = "FX処理のサンプルレート", options = M.MST_PROC_SRATE_OPTIONS, note = "mst_rate" },
+      { kind = "check", key = "EXPORT_VERSIONS", label = "別バージョンも書き出す" },
+      { kind = "check", key = "STRIP_NUMBER", label = "ファイル名と曲名から先頭の番号（「01 」など）を外す" },
+      { kind = "num",   key = "GAP_FIRST",   label = "1曲目の前の無音(秒)", step = 0.5, fmt = "%.2f",
+        visible = "mst_has_ddp" },
+      { kind = "num",   key = "GAP_TRACKS",  label = "曲間(秒)", step = 0.5, fmt = "%.2f",
+        visible = "mst_has_ddp" },
+    } },
+
+    { kind = "section", label = "曲目情報（CD-TEXT）", visible = "mst_has_ddp", rows = {
+      { kind = "meta" },
+    } },
+
+    { kind = "section", label = "詳細", collapsible = true, rows = {
+      { kind = "combo", key = "RESAMPLE_MODE", label = "リサンプルモード", options = M.RESAMPLE_OPTIONS },
     } },
   },
 
@@ -228,6 +275,7 @@ M.ROWS = {
 
     { kind = "section", label = "出力設定", rows = {
       { kind = "combo", key = "MASTER_BITS", label = "ビット深度", options = M.WAV_OPTIONS },
+      { kind = "combo", key = "FX_SRATE",    label = "FX処理のサンプルレート", options = M.MST_PROC_SRATE_OPTIONS, note = "fx_rate" },
     } },
 
     { kind = "section", label = "詳細", collapsible = true, rows = {
@@ -351,6 +399,17 @@ function M.detect(tab)
     d.hw_tracks, d.hw_missing, d.hw_found = tracks, missing, found
   end
 
+  -- Mastering: 2MIXBUS 直下の曲と版、Dither の2トラック（名前は大文字小文字を区別しない）
+  if tab == "mastering" then
+    local okc, info = pcall(function() return core().mst_detect(base) end)
+    if okc and info then
+      d.mst = info
+      d.bus, d.master = info.bus, info.master
+    else
+      d.mst = { songs = {}, notes = { { text = "曲の読み取りに失敗しました: " .. tostring(info), block = true } } }
+    end
+  end
+
   -- ハード通し: MASTERに「有効な ReaInsert」があるか
   d.reainsert = nil
   if d.master then
@@ -388,9 +447,11 @@ function M.detect(tab)
   -- 出来るファイルの名前が旧と変わってしまう（2mix Render は $project_$date、
   -- Para + 2mix は SAMPLEMASTER が旧の名前）。「なし」はつこさんが自分で選べる。
   values.DITHER_MODE = "track"
+  if tab ~= "mastering" then
   why(("ディザー: 『%s』トラックが%s → Ditherトラック%s"):format(base.DITHER_TRACK_NAME,
     d.dither and "ある" or "ない",
     d.dither and "" or "（トラックが無いので、ディザー無しの1本だけ書き出す道になる）"))
+  end
   values.FORMAT2 = M.is_windows() and "mp3" or "aac"
   why("2つ目の形式: " .. (M.is_windows() and "Windows なので MP3" or "mac なので AAC"))
   why("ハード通し: " .. (d.hardware and "有効なReaInsertがある → ハードを通す"
@@ -420,7 +481,15 @@ function M.load(tab, api)
   local detected, d = M.detect(tab)
   local ui, src, warns = Store.resolve(tab, keys, detected, api)
   normalize_bits(ui)
-  return { tab = tab, ui = ui, src = src, detect = d, warns = warns, keys = keys }
+  local st = { tab = tab, ui = ui, src = src, detect = d, warns = warns, keys = keys }
+  if tab == "mastering" then
+    -- 曲目情報とシートのURLは、タブの設定とは別にプロジェクトから読む
+    local meta, merr = Store.load_meta(api)
+    st.meta = meta
+    st.sheet_url = Store.load_sheet_url(api)
+    if merr then warns[#warns + 1] = "曲目情報を読めませんでした: " .. tostring(merr) end
+  end
+  return st
 end
 
 -- ===========================================================================
@@ -581,11 +650,6 @@ end
 -- 読むだけの道具（サイドチェーンの確認・構成の資料）
 -- ===========================================================================
 -- どちらもプロジェクトを書き換えない。骨組み（core）は一度だけ読んで使い回す。
-local CORE
-local function core()
-  if not CORE then CORE = dofile(DIR .. "tukonya_render_core.lua") end
-  return CORE
-end
 M.core = core
 
 -- ボタンを押せるか。戻り値: ok, 押せない理由（短い一言）
@@ -664,6 +728,9 @@ function M.visible(st, which)
     -- 同時レンダー（AAC/MP3）の名前の欄。「なし」なら、そのファイル自体が出ない
     return st.ui.FORMAT2 ~= "none"
   end
+  if which == "mst_has_ddp" then
+    return S.outputs_have(st.ui.OUTPUTS, "ddp")
+  end
   if which == "dither_pattern" then
     local mode = st.ui.DITHER_MODE
     if mode == "reaper" then return true end
@@ -693,6 +760,17 @@ function M.note(st, which)
     return M.pattern_note(st, "DEFAULT_PATTERN")
   end
   if which == "dest_hw"      then return M.pattern_note(st, "HW_PATTERN") end
+  if which == "mst_songs"    then return M.mst_songs_note(st) end
+  if which == "fx_rate"      then   -- v2.7.0: 他のタブの FX処理のサンプルレート（数に直した値）
+    local ok, rate, why = pcall(function() return core().proc_rate((S.merge(st.tab, st.ui or {}) or {}).FX_SRATE) end)
+    if not ok or not rate then return "不明" end
+    return ("%d Hz（%s）"):format(rate, why)
+  end
+  if which == "mst_rate"     then
+    local ok, rate, why = pcall(function() return core().mst_proc_rate(M.mst_cfg(st)) end)
+    if not ok or not rate then return "不明" end
+    return ("%d Hz（%s）"):format(rate, why)
+  end
   if which == "watermark"    then return M.watermark_note(st) end
   if which == "hw_items"     then return M.hw_items_note(st) end
   if which == "hw_reainsert" then return M.hw_reainsert_note(st) end
@@ -702,6 +780,8 @@ end
 -- 書き出せる状態か。戻り値: ok, 理由
 function M.gate(st)
   local def = S.defaults(st.tab)
+
+  if st.tab == "mastering" then return M.mst_gate(st) end
 
   -- Hardware Print は2MIXBUSもMASTERも使わない。見るのは「選んだアイテム」だけ。
   if st.tab == "hwprint" then
@@ -779,6 +859,8 @@ function M.run(st, api)
   cfg.INTERACTIVE = true
   -- この曲の記憶は「書き出し」のたびに自動で保存する（判断3）
   Store.save_project(st.tab, Store.pick(st.ui, st.keys or M.stored_keys(st.tab)), api)
+  -- Mastering: 窓で直した曲目情報を、書き出す前に必ずプロジェクトへ書いておく（core はそこから読む）
+  if st.tab == "mastering" and st.meta then Store.save_meta(st.meta, api) end
   local C = dofile(DIR .. "tukonya_render_core.lua")
   local res = C.run(cfg)
   if res.job then
@@ -787,6 +869,253 @@ function M.run(st, api)
     for _, r in ipairs(st.detect.reasons or {}) do res.job:log("自動判定: %s", r) end
   end
   return res, cfg
+end
+
+-- ===========================================================================
+-- Mastering（読むだけの一覧・関門・曲目情報・完了の文）
+-- ===========================================================================
+local MLIB
+local function mlib()
+  if not MLIB then MLIB = dofile(DIR .. "tukonya_mastering_lib.lua") end
+  return MLIB
+end
+M.mlib = mlib
+
+-- 窓の値を既定に重ねた設定（点検は出力の選び方で変わるので、毎回ここから作る）
+function M.mst_cfg(st)
+  return (S.merge("mastering", st.ui or {})) or S.defaults("mastering")
+end
+
+-- ----- 出力の一覧（窓の「出力」欄。行を足す・消す・選び直すのはここ。窓は描くだけ）-----
+-- サンプルレートの選択肢（「プロジェクトと同じ」はフォルダ名が決まらないので Mastering には出さない）
+M.MST_SRATE_OPTIONS = {}
+for _, o in ipairs(M.SRATE_OPTIONS) do
+  if o[1] > 0 then M.MST_SRATE_OPTIONS[#M.MST_SRATE_OPTIONS + 1] = o end
+end
+M.MST_FORMAT_OPTIONS = {}
+for _, f in ipairs(S.OUTPUT_FORMATS) do M.MST_FORMAT_OPTIONS[#M.MST_FORMAT_OPTIONS + 1] = { f.key, f.label } end
+M.MST_DITHER_WAV = { { "track24", "24bit Ditherトラック" }, { "track16", "16bit Ditherトラック" },
+                     { "reaper", "REAPERのディザー" }, { "none", "なし" } }
+M.MST_DITHER_DDP = { { "track16", "16bit Ditherトラック" }, { "reaper", "REAPERのディザー" }, { "none", "なし" } }
+
+-- 行ごとに出す欄: srate / bits / dither（DDP と整数のWAVだけ）
+function M.mst_row_fields(r)
+  if r.fmt == "wav" then
+    return { srate = true, bits = true, dither = S.bits_is_fixed(r.bits) }
+  end
+  if r.fmt == "ddp" then return { dither = true } end
+  return {}
+end
+
+function M.mst_rows(st) return S.split_outputs(st.ui.OUTPUTS) end
+function M.mst_set_rows(st, rows) st.ui.OUTPUTS = S.serialize_outputs(rows) end
+
+-- 新しい行（48/24 が無ければ 48/24、あれば 44.1/16）
+function M.mst_new_row(rows)
+  local used = {}
+  for _, r in ipairs(rows or {}) do used[tostring(r.folder):lower()] = true end
+  for _, cand in ipairs({ { 48000, "pcm24" }, { 44100, "pcm16" }, { 48000, "fp32" }, { 96000, "pcm24" } }) do
+    local r = { fmt = "wav", srate = cand[1], bits = cand[2] }
+    r.dither = S.default_dither(r)
+    r.folder = S.auto_folder(r)
+    if not used[r.folder:lower()] then return r end
+  end
+  local r = { fmt = "wav", srate = 48000, bits = "pcm24", dither = "track24" }
+  r.folder = S.auto_folder(r) .. "-" .. tostring(#(rows or {}) + 1)
+  return r
+end
+
+-- 行の1項目を変える。フォルダ名とディザーは「自動のままなら」新しい自動の値に追従させる。
+-- 戻り値: 変えたか, 変えなかった理由
+function M.mst_change_row(rows, i, field, value)
+  local r = rows[i]
+  if not r then return false, "その行はありません" end
+  if field == "folder" then r.folder = (tostring(value or ""):gsub("[|;]", "")); return true end
+  if field == "dither" then r.dither = value; return true end
+  if field == "fmt" and value == "ddp" and r.fmt ~= "ddp" then
+    for k, o in ipairs(rows) do
+      if k ~= i and o.fmt == "ddp" then return false, "DDP は1つまでです（もう一つの行が DDP です）。" end
+    end
+  end
+  local old_auto_folder = S.auto_folder(r)
+  local old_auto_dither = S.default_dither(r)
+  local was_auto_folder = (r.folder == old_auto_folder or r.folder == "")
+  local was_auto_dither = (r.dither == old_auto_dither or r.dither == "")
+  r[field] = value
+  if field == "fmt" then
+    if value == "wav" then
+      r.srate = tonumber(r.srate) or 48000
+      if not S.wav_format_key(r.bits) then r.bits = "pcm24" end
+    else
+      r.srate, r.bits = "", ""
+    end
+    was_auto_dither = true
+  end
+  if was_auto_folder then r.folder = S.auto_folder(r) end
+  if was_auto_dither then r.dither = S.default_dither(r) end
+  if r.fmt == "wav" and not S.bits_is_fixed(r.bits) then r.dither = "none" end
+  if r.fmt == "ddp" and r.dither == "track24" then r.dither = "track16" end
+  return true
+end
+
+-- 行の書き出し先の見本
+function M.mst_row_dest(st, r)
+  local dir = M.dest_dir(st) or M.NO_DEST
+  if r.fmt == "ddp" then return ("%s/%s/（DDPID・PQDESCR・IMAGE.DAT ほか）"):format(dir, r.folder) end
+  local songs = (st.detect.mst or {}).songs or {}
+  local ext = (r.fmt == "wav") and ".wav" or (S.format2_ext(r.fmt) or "")
+  local first = songs[1] and (songs[1].stem .. ext) or ("<曲名>" .. ext)
+  return ("%s/%s/%s など"):format(dir, r.folder, first)
+end
+
+local function fmt_len(sec)
+  sec = tonumber(sec) or 0
+  return ("%d:%05.2f"):format(math.floor(sec / 60), sec - math.floor(sec / 60) * 60)
+end
+
+function M.mst_songs_note(st)
+  local info = st.detect.mst
+  if not info or #(info.songs or {}) == 0 then return "（2MIXBUS の中にトラックが見つかりません）" end
+  local lines = {}
+  local with_versions = M.mst_cfg(st).EXPORT_VERSIONS ~= false
+  for i, s in ipairs(info.songs) do
+    if s.main then
+      lines[#lines + 1] = ("%d. %s → %s（%s）"):format(i, s.name, s.stem, fmt_len(s.main_len))
+    else
+      lines[#lines + 1] = ("%d. %s → 本編が分かりません"):format(i, s.name)
+    end
+    for _, v in ipairs(with_versions and s.versions or {}) do
+      if v.items == 1 then
+        lines[#lines + 1] = ("      別版: %s → %s_%s（DDP には入りません）"):format(v.name, s.stem, v.stem)
+      end
+    end
+  end
+  return table.concat(lines, "\n")
+end
+
+function M.mst_issues(st)
+  local info = st.detect.mst
+  if not info then return { { text = "まだ読み取っていません", block = true } } end
+  return core().mst_issues(info, M.mst_cfg(st))
+end
+
+-- 書き出しは止めない注意（窓の下の「注意:」に出す。止めるものは「書き出せません:」に出る）
+function M.warn_lines(st)
+  if st.tab ~= "mastering" then return {} end
+  local out = {}
+  for _, is in ipairs(M.mst_issues(st)) do
+    if not is.block then out[#out + 1] = is.text end
+  end
+  return out
+end
+
+function M.mst_gate(st)
+  if M.dest_dir(st) == nil then
+    return false, "プロジェクトを一度保存してください（書き出し先がプロジェクトのフォルダになります）。"
+  end
+  -- 欄の一覧そのものを見る（壊れていると設定の組み立てで既定へ戻ってしまうので、ここで止める）
+  local _, why = S.parse_outputs(st.ui.OUTPUTS)
+  if why then return false, "出力の一覧: " .. why end
+  for _, is in ipairs(M.mst_issues(st)) do
+    if is.block then return false, is.text end
+  end
+  return true, nil
+end
+
+-- ----- 曲目情報（プロジェクトに保存。タブの設定とは別）-----
+M.META_FIELDS_ALBUM = { { "title", "TITLE" }, { "performer", "PERFORMER" }, { "songwriter", "SONGWRITER" },
+                        { "composer", "COMPOSER" }, { "arranger", "ARRANGER" }, { "ean", "EAN/JAN" } }
+M.META_FIELDS_TRACK = { { "title", "TITLE" }, { "performer", "PERFORMER" }, { "songwriter", "SONGWRITER" },
+                        { "composer", "COMPOSER" }, { "arranger", "ARRANGER" }, { "isrc", "ISRC" } }
+M.LOGIN_MSG = "共有設定を『リンクを知っている人』にしてください（シートを読めませんでした）。下の欄に直接書き込むこともできます。"
+
+function M.mst_meta_load(api) return Store.load_meta(api) end
+function M.mst_meta_save(meta, api) Store.save_meta(meta, api) end
+
+-- シートから取り込む。fetch は差し替えられる（試験用）。
+-- 戻り値: meta / nil, 理由, 注意の一覧
+function M.mst_import(url, api, fetch)
+  local L = mlib()
+  url = tostring(url or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  Store.save_sheet_url(url, api)
+  local csv_url, why = L.sheet_export_url(url)
+  if not csv_url then return nil, why end
+  local body, ferr = (fetch or L.fetch_url)(csv_url)
+  if not body or body == "" then return nil, "シートを読めませんでした" .. (ferr and ("（" .. tostring(ferr) .. "）") or "") .. "。" end
+  if L.is_login_page(body) then return nil, M.LOGIN_MSG end
+  local meta, warns = L.parse_sheet_csv(body)
+  if #(meta.tracks or {}) == 0 and warns and #warns > 0 then
+    return nil, "シートの形が読めませんでした: " .. table.concat(warns, " / ")
+  end
+  Store.save_meta(meta, api)
+  return meta, nil, warns or {}
+end
+
+-- 書き出す前に見せる注意（曲とシートの行の対応、CD-TEXT の決まり）
+function M.mst_meta_warnings(st, meta)
+  meta = meta or st.meta or Store.empty_meta()
+  local out = {}
+  local songs = ((st.detect or {}).mst or {}).songs or {}
+  local has = core().mst_has_meta(meta)
+  if has and #(meta.tracks or {}) ~= #songs then
+    out[#out + 1] = ("曲の数（%d）とシートの行数（%d）が違います。曲は上から順に行と対応させます。")
+      :format(#songs, #(meta.tracks or {}))
+  end
+  for _, w in ipairs(mlib().validate_metadata(meta)) do out[#out + 1] = w end
+  if not core().mst_has_cdtext(meta) then
+    out[#out + 1] = "曲名などが空なので、CD-TEXT は作りません（DDP 自体は書き出せます）。"
+  end
+  return out
+end
+
+-- 曲 N ↔ シート N 行目
+function M.mst_pairing(st, meta)
+  meta = meta or st.meta or Store.empty_meta()
+  local songs = ((st.detect or {}).mst or {}).songs or {}
+  local n = math.max(#songs, #(meta.tracks or {}))
+  local lines = {}
+  for i = 1, n do
+    local s, t = songs[i], (meta.tracks or {})[i]
+    lines[#lines + 1] = ("トラック %d 『%s』 ↔ シート %s"):format(i, s and s.name or "（トラックなし）",
+      t and (("%d 行目『%s』"):format(tonumber(t.no) or i, tostring(t.title or ""))) or "（行なし）")
+  end
+  return lines
+end
+
+-- 完了の文（Mastering）
+function M.done_text_mastering(cfg, j)
+  local t = {}
+  t[#t + 1] = "書き出しました。"
+  if j.hw_mode then
+    t[#t + 1] = "ReaInsertを検出したため、ハードウェア書き出しモードで出力しました。"
+  else
+    t[#t + 1] = "有効なReaInsertを検出しなかったため、オフラインモードで出力しました。"
+  end
+  t[#t + 1] = ""
+  for _, o in ipairs(j.mst_out_dirs or {}) do
+    if o.fmt == "ddp" then
+      if j.mst_ddp_count then t[#t + 1] = ("DDP（%d 曲） → %s"):format(j.mst_ddp_count, tostring(o.dir)) end
+    else
+      t[#t + 1] = ("%s → %s"):format(o.label, tostring(o.dir))
+    end
+  end
+  t[#t + 1] = ""
+  t[#t + 1] = "書き出したファイル:"
+  if #j.produced == 0 then t[#t + 1] = "  （ありません）" end
+  for _, f in ipairs(j.produced) do t[#t + 1] = f end
+  if #j.warnings > 0 then
+    t[#t + 1] = ""
+    t[#t + 1] = ("注意 %d 件:"):format(#j.warnings)
+    for _, w in ipairs(j.warnings) do t[#t + 1] = "  ・" .. w end
+  end
+  t[#t + 1] = ""
+  t[#t + 1] = "中間ファイルは削除しました。"
+  if j.LOG_PATH then
+    t[#t + 1] = ""
+    t[#t + 1] = "実行記録:"
+    t[#t + 1] = j.LOG_PATH
+  end
+  return table.concat(t, "\n")
 end
 
 -- 完了の文（窓の完了画面と、無人の突き合わせ試験が同じ内容を使う）。
@@ -832,6 +1161,7 @@ end
 
 function M.done_text(cfg, j)
   if cfg.TAB == "hwprint" then return M.done_text_hwprint(cfg, j) end
+  if cfg.TAB == "mastering" then return M.done_text_mastering(cfg, j) end
   local t = {}
   t[#t + 1] = "完了しました。"
   if j.hw_mode then
