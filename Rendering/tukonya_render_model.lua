@@ -130,6 +130,10 @@ M.ROWS = {
         options = { { "project", "プロジェクト全体" }, { "bus_items", "2MIXBUSのアイテム" },
                     { "timesel", "選択範囲" } } },
       { kind = "combo", key = "RESAMPLE_MODE",   label = "リサンプルモード", options = M.RESAMPLE_OPTIONS },
+      -- v2.8.0: ディザーを載せたトラックの名前（大文字小文字・前後の空白は区別しない）。旧方式のフォルダ名は完全一致。
+      { kind = "text",  key = "DITHER24_TRACK_NAME", label = "24bit Ditherトラックの名前:" },
+      { kind = "text",  key = "DITHER16_TRACK_NAME", label = "16bit Ditherトラックの名前:" },
+      { kind = "text",  key = "DITHER_TRACK_NAME",   label = "（旧）Ditherフォルダの名前:" },
       -- 読むだけの道具（key を持たせない＝記憶にも既定にも入れない）
       -- 「親トラックのサイドチェーンを有効にする(実験中)」を入れているときだけ出す。
       -- 中身（通り道と受け）は1本だけ選んでいるとき自動で出る（ボタンは資料の書き出しだけ）。
@@ -180,6 +184,10 @@ M.ROWS = {
 
     { kind = "section", label = "詳細", collapsible = true, rows = {
       { kind = "combo", key = "RESAMPLE_MODE", label = "リサンプルモード", options = M.RESAMPLE_OPTIONS },
+      -- v2.8.0: ディザーを載せたトラックの名前（大文字小文字・前後の空白は区別しない）。旧方式のフォルダ名は完全一致。
+      { kind = "text",  key = "DITHER24_TRACK_NAME", label = "24bit Ditherトラックの名前:" },
+      { kind = "text",  key = "DITHER16_TRACK_NAME", label = "16bit Ditherトラックの名前:" },
+      { kind = "text",  key = "DITHER_TRACK_NAME",   label = "（旧）Ditherフォルダの名前:" },
     } },
   },
 
@@ -222,6 +230,10 @@ M.ROWS = {
       { kind = "num",   key = "DUCK_PRE",     label = "声の何秒手前で下げ切るか", step = 0.05, fmt = "%.3f" },
       { kind = "num",   key = "DUCK_FADE_IN", label = "下げるのにかける秒数",   step = 0.05, fmt = "%.3f" },
       { kind = "num",   key = "DUCK_RELEASE", label = "戻すのにかける秒数",     step = 0.05, fmt = "%.3f" },
+      -- v2.8.0: ディザーを載せたトラックの名前（大文字小文字・前後の空白は区別しない）。旧方式のフォルダ名は完全一致。
+      { kind = "text",  key = "DITHER24_TRACK_NAME", label = "24bit Ditherトラックの名前:" },
+      { kind = "text",  key = "DITHER16_TRACK_NAME", label = "16bit Ditherトラックの名前:" },
+      { kind = "text",  key = "DITHER_TRACK_NAME",   label = "（旧）Ditherフォルダの名前:" },
     } },
   },
 
@@ -350,6 +362,15 @@ function M.detect(tab)
   d.bus     = find_track_by_name(base.BUS_NAME)
   d.master  = find_track_by_name(base.MASTER_NAME)
   d.dither  = find_track_by_name(base.DITHER_TRACK_NAME)
+  -- v2.8.0: ディザーの置き場を窓の名前で選び直せるよう、トラックの名前と形だけ控える（読むだけ）
+  d.tracks = {}
+  for i = 0, reaper.CountTracks(0) - 1 do
+    local tr = reaper.GetTrack(0, i)
+    local _, nm = reaper.GetTrackName(tr)
+    d.tracks[#d.tracks + 1] = { name = tostring(nm or ""), tr = tr,
+      folder = math.floor(reaper.GetMediaTrackInfo_Value(tr, "I_FOLDERDEPTH") + 0.5) == 1,
+      toplevel = reaper.GetParentTrack(tr) == nil }
+  end
   d.bus_range, d.bus_items = M.bus_item_range(d.bus)
   d.timesel = { reaper.GetSet_LoopTimeRange(false, false, 0, 0, false) }
   d.proj_len = reaper.GetProjectLength(0)
@@ -447,10 +468,9 @@ function M.detect(tab)
   -- 出来るファイルの名前が旧と変わってしまう（2mix Render は $project_$date、
   -- Para + 2mix は SAMPLEMASTER が旧の名前）。「なし」はつこさんが自分で選べる。
   values.DITHER_MODE = "track"
-  if tab ~= "mastering" then
-  why(("ディザー: 『%s』トラックが%s → Ditherトラック%s"):format(base.DITHER_TRACK_NAME,
-    d.dither and "ある" or "ない",
-    d.dither and "" or "（トラックが無いので、ディザー無しの1本だけ書き出す道になる）"))
+  if tab ~= "mastering" and tab ~= "hwprint" then
+    local dp = M.dither_plan({ tab = tab, ui = base, detect = d })
+    why(dp.text)
   end
   values.FORMAT2 = M.is_windows() and "mp3" or "aac"
   why("2つ目の形式: " .. (M.is_windows() and "Windows なので MP3" or "mac なので AAC"))
@@ -578,17 +598,52 @@ function M.range_note(st)
   return fmt_range(0, d.proj_len), true
 end
 
-function M.dither_note(st)
-  local def = S.defaults(st.tab)
-  if st.detect.dither then
-    return ("『%s』トラック: あり"):format(def.DITHER_TRACK_NAME)
+-- v2.8.0: ディザーの道（core の prepare と同じ決まり。S.dither_plan）。窓の名前で選ぶ。
+-- 戻り値: { plan = "host"/"legacy"/"reaper"/"float"/"none"/"missing", text = 窓と記録に出す1行,
+--           host = { name, folder, toplevel } または nil, hname = 置き場の名前（ビット深度に合うもの）}
+local function trim_lower(x) return (tostring(x or ""):gsub("^%s+", ""):gsub("%s+$", ""):lower()) end
+function M.dither_plan(st)
+  local ui, d = st.ui or {}, st.detect or {}
+  local def = S.defaults(st.tab) or {}
+  local function val(k) local v = ui[k]; if v == nil then v = def[k] end; return v end
+  local mode, bits = val("DITHER_MODE"), val("MASTER_BITS")
+  local kind = S.dither_host_kind(bits)
+  local hname = (kind == "d24") and val("DITHER24_TRACK_NAME") or ((kind == "d16") and val("DITHER16_TRACK_NAME") or nil)
+  local lname = val("DITHER_TRACK_NAME")
+  local host, legacy
+  if d.tracks then
+    for _, t in ipairs(d.tracks) do
+      if hname and not host and trim_lower(t.name) == trim_lower(hname) then host = t end
+      if not legacy and t.name == lname then legacy = t end
+    end
+  else
+    legacy = d.dither   -- トラックの一覧が無い（古い読み取り結果）ときは、旧フォルダの有無だけ
   end
-  if st.ui.DITHER_MODE == "track" then
+  if mode ~= "track" then host = nil end
+  local plan = S.dither_plan(mode, bits, host ~= nil, legacy ~= nil)
+  local text
+  if plan == "host" then
+    text = ("ディザーの方式: 『%s』トラック"):format(hname)
+    if not host.toplevel then
+      text = text .. (" … 一番上の段にありません。一番上の段へ移してください（このままでは書き出せません）")
+    elseif host.folder then
+      text = text .. (" … フォルダになっています。子を持たない普通のトラックにすることをおすすめします")
+    end
+  elseif plan == "legacy" then text = ("ディザーの方式: 旧『%s』フォルダ"):format(lname)
+  elseif plan == "reaper" then text = "ディザーの方式: REAPERのディザー"
+  elseif plan == "float" then text = "ディザーの方式: なし（32/64bit float のためディザー版は書き出しません）"
+  elseif plan == "none" then text = "ディザーの方式: なし"
+  elseif hname then
     -- トラックが無くても止めない。「ディザー＝なし」を選んだときと同じ1組を書き出す。
-    return ("「%s」トラックが存在しないため、ディザーを通した.wavは出力しません。")
-      :format(def.DITHER_TRACK_NAME)
+    text = ("「%s」トラック（旧「%s」フォルダも）が存在しないため、ディザーを通した.wavは出力しません。"):format(hname, lname)
+  else
+    text = ("「%s」トラックが存在しないため、ディザーを通した.wavは出力しません。"):format(lname)
   end
-  return ("『%s』トラック: なし"):format(def.DITHER_TRACK_NAME)
+  return { plan = plan, text = text, host = host, hname = hname }
+end
+
+function M.dither_note(st)
+  return M.dither_plan(st).text
 end
 
 function M.hardware_note(st)
@@ -732,10 +787,8 @@ function M.visible(st, which)
     return S.outputs_have(st.ui.OUTPUTS, "ddp")
   end
   if which == "dither_pattern" then
-    local mode = st.ui.DITHER_MODE
-    if mode == "reaper" then return true end
-    if mode == "track" then return st.detect.dither ~= nil end
-    return false
+    -- v2.8.0: core と同じ決まり（ディザー版を出す道のときだけ）
+    return S.plan_makes_pass_d(M.dither_plan(st).plan)
   end
   return true
 end
@@ -821,6 +874,13 @@ function M.gate(st)
   end
   if st.tab == "para" and st.detect.sel_tracks == 0 then
     return false, "パラで書き出したいトラックを選択してください。"
+  end
+  -- v2.8.0: ディザーの置き場が別のフォルダの中にあると、その親の処理が二重にかかる（core も止める）
+  do
+    local dp = M.dither_plan(st)
+    if dp.plan == "host" and dp.host and not dp.host.toplevel then
+      return false, ("『%s』が一番上の段にありません。上のフォルダの処理が二重にかかるので、一番上の段へ移してください。"):format(dp.hname)
+    end
   end
   if st.tab == "preview" then
     if not st.detect.preview_track then

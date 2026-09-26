@@ -152,6 +152,44 @@ function M.default_dither(row)
   return "track24"
 end
 
+-- ===========================================================================
+-- 2mix Render / 2mix Preview / Para + 2mix のディザーの置き場（v2.8.0）
+-- ===========================================================================
+-- 2mix のビット深度（MASTER_BITS）で、ディザーを載せたトラックを選ぶ。
+--   24 bit PCM → "d24"（『24bit Dither』トラック）/ 16 bit PCM → "d16"（『16bit Dither』トラック）
+--   それ以外 → nil（32/64 bit float はディザー版そのものを出さない。8/32 bit PCM などは新しい置き場が無い）
+function M.dither_host_kind(bits)
+  local k = M.wav_format_key(bits)
+  if k == "pcm24" then return "d24" end
+  if k == "pcm16" then return "d16" end
+  return nil
+end
+
+-- 32/64 bit float か（ディザーを掛ける意味が無いので、どの方式でもディザー版を出さない）
+function M.bits_is_float(bits)
+  local k = M.wav_format_key(bits)
+  return k == "fp32" or k == "fp64"
+end
+
+-- ディザーの道を決める（REAPER を呼ばない）。
+--   mode       … DITHER_MODE（"track" / "reaper" / "none"）
+--   bits       … MASTER_BITS
+--   has_host   … ビット深度に合う『24bit Dither』／『16bit Dither』トラックがあるか
+--   has_legacy … 旧方式の『Dither』フォルダ（DITHER_TRACK_NAME と完全一致）があるか
+-- 戻り値: "float" / "none" / "reaper" / "host" / "legacy" / "missing"
+--   ディザー版（Pass D）を出すのは "reaper" / "host" / "legacy" のときだけ。
+function M.dither_plan(mode, bits, has_host, has_legacy)
+  if M.bits_is_float(bits) then return "float" end
+  if mode == "none" then return "none" end
+  if mode == "reaper" then return "reaper" end
+  if has_host and M.dither_host_kind(bits) then return "host" end
+  if has_legacy then return "legacy" end
+  return "missing"
+end
+function M.plan_makes_pass_d(plan)
+  return plan == "reaper" or plan == "host" or plan == "legacy"
+end
+
 local BITS_WORD = { pcm8 = "8", pcm16 = "16", pcm24 = "24", pcm32 = "32", fp32 = "32f", fp64 = "64f" }
 local function srate_word(sr)
   sr = tonumber(sr) or 0
@@ -309,7 +347,11 @@ local COMMON = {
   BUS_NAME            = "2MIXBUS",   -- まとめ役の2mixトラック名
   MASTER_NAME         = "MASTER",    -- ReaInsert＋マスターチェーンを持つフォルダトラック名
   REAINSERT_MATCH     = "reainsert", -- FX名にこの文字列を含むものをReaInsertとみなす（小文字比較）
-  DITHER_TRACK_NAME   = "Dither",    -- ディザー用プラグインを載せたトラック名
+  DITHER_TRACK_NAME   = "Dither",    -- （旧方式）MASTER を包むディザー用フォルダトラック名（完全一致）
+  -- v2.8.0: ディザーを載せた一番上の段の普通のトラック（大文字小文字・前後の空白は区別しない）。
+  -- 2mix の 3 タブは 2mix のビット深度で選び（24 bit → 24bit、16 bit → 16bit）、Mastering は出力の行ごとに選ぶ。
+  DITHER24_TRACK_NAME = "24bit Dither",
+  DITHER16_TRACK_NAME = "16bit Dither",
   -- 書き出す範囲の決め方。"bus_items"=2MIXBUSのアイテムの端から端 / "timesel" / "project"
   RANGE_MODE          = "bus_items",
   -- 書き出しのサンプルレート。0 は「プロジェクトと同じ」（REAPERの RENDER_SRATE=0。
@@ -400,8 +442,7 @@ local PER_TAB = {
   -- 曲目情報（CD-TEXT）とシートのURLはこの表ではなく、プロジェクトの記憶
   -- （ProjExtState "TUKONYA_RENDER_MASTERING"）に置く（.RPP と一緒に保存される）。
   mastering = {
-    DITHER24_TRACK_NAME = "24bit Dither",   -- 48/24 WAV 用のディザーを載せたトラック（大文字小文字は区別しない）
-    DITHER16_TRACK_NAME = "16bit Dither",   -- DDP 用のディザーを載せたトラック
+    -- DITHER24_TRACK_NAME（48/24 WAV 用）/ DITHER16_TRACK_NAME（DDP 用）は v2.8.0 から COMMON（値は同じ）
     -- 出力の一覧（v2.5.0）。1行 = 「形式|サンプルレート|ビット深度|ディザー|フォルダ名」、行は「;」で区切る。
     --   形式 … wav / ddp / aac / mp3（DDP は1行まで）
     --   ディザー … track24（24bit Dither トラック）/ track16（16bit Dither トラック）/ reaper / none
@@ -540,6 +581,22 @@ local function check_key(tab, k, v)
     return true
   end
   return true
+end
+
+-- v2.8.0: 全タブ共通になった『24bit Dither』／『16bit Dither』の名前。v2.7.x までは Mastering の
+-- 設定だけが持っていたので、あるタブの記憶に無ければ、Mastering の記憶に残っている値を引き継ぐ。
+M.SHARED_DITHER_KEYS = { "DITHER24_TRACK_NAME", "DITHER16_TRACK_NAME" }
+-- own … そのタブの記憶（1 段ぶん。nil 可）、mst … Mastering の同じ段の記憶（nil 可）。
+-- 戻り値: 引き継いだ値だけの表（own に値があるキーは入れない。own も mst も書き換えない）
+function M.inherit_shared_dither(own, mst)
+  local out = {}
+  if type(mst) ~= "table" then return out end
+  for _, k in ipairs(M.SHARED_DITHER_KEYS) do
+    local mine = (type(own) == "table") and own[k] or nil
+    local v = mst[k]
+    if mine == nil and type(v) == "string" and v ~= "" then out[k] = v end
+  end
+  return out
 end
 
 -- 既定値に loaded を重ねる。不正な値は既定値に戻し、警告を積む。
