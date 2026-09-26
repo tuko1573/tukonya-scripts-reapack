@@ -9,6 +9,7 @@
     "preview" … 2mix Preview    （旧 TUKO_2Stage_Preview_Render）
     "para"    … Para + 2mix     （旧 TUKONYA_MasterParaRender）
     "hwprint" … Hardware Print  （旧 TUKO_VoComp_Render）
+    "mastering" … Mastering    （48/24 の曲別WAV と DDP。計画書/計画書_mastering.md）
 
   使い方:
     local S = dofile(".../tukonya_render_settings.lua")
@@ -21,7 +22,7 @@
 
 local M = { VERSION = "0.1.0" }
 
-M.TABS = { "mix2", "preview", "para", "hwprint" }
+M.TABS = { "mix2", "preview", "para", "hwprint", "mastering" }
 
 -- ===========================================================================
 -- 書き出し形式（RENDER_FORMAT / RENDER_FORMAT2）の組み立て
@@ -96,6 +97,11 @@ M.AAC_FORMAT2 = "RlZBWAMAAAAAAAAAAAgAAAAAAADAAAAAgAcAADgEAAAAAPBBAQAAAF8AAAAAAA=
 -- 副形式MP3。4文字のsink IDは「その形式の既定設定」を意味する（API資料 RENDER_FORMAT2）
 M.MP3_FORMAT2 = "l3pm"
 
+-- DDP の RENDER_FORMAT。4文字の形式名 "ddp " を逆順にした " pdd" の base64。
+-- 2026-09-23 に MacBook Pro（REAPER 7.80）で確かめた（tests/mastering_rig/phase1/PHASE1_RESULTS.md E1）。
+-- 逆順にしない "ddp " や "ZGRwIA==" は、読み戻しは一致するのに黙って普通のWAVになる。
+M.DDP_FORMAT = "IHBkZA=="
+
 function M.format2_string(kind)
   if kind == "aac" then return M.AAC_FORMAT2 end
   if kind == "mp3" then return M.MP3_FORMAT2 end
@@ -106,6 +112,190 @@ function M.format2_ext(kind)
   if kind == "aac" then return ".m4a" end
   if kind == "mp3" then return ".mp3" end
   return nil
+end
+
+-- ===========================================================================
+-- Mastering の出力の一覧（v2.5.0）
+-- ===========================================================================
+--   文字列: 「形式|サンプルレート|ビット深度|ディザー|フォルダ名」を「;」でつなぐ。
+--     例: "wav|48000|pcm24|track24|48-24;ddp|||track16|DDP;aac||||AAC"
+--   行の表: { fmt = "wav", srate = 48000, bits = "pcm24", dither = "track24", folder = "48-24" }
+--   DDP は 44.1kHz/16bit 固定（サンプルレートとビット深度は空）。AAC/MP3 はディザーを持たない。
+M.OUTPUT_FORMATS = {
+  { key = "wav", label = "WAV" },
+  { key = "ddp", label = "DDP" },
+  { key = "aac", label = "AAC（.m4a）" },
+  { key = "mp3", label = "MP3（.mp3）" },
+}
+local OUT_FMT = { wav = true, ddp = true, aac = true, mp3 = true }
+local OUT_DITHER = { track24 = true, track16 = true, reaper = true, none = true }
+M.OUTPUT_DITHER_LABELS = {
+  track24 = "24bit Ditherトラック", track16 = "16bit Ditherトラック",
+  reaper = "REAPERのディザー", none = "なし",
+}
+-- フォルダ名に使えない文字（区切りの | ; と、パスや REAPER のワイルドカードになるもの）
+local BAD_FOLDER = '[|;/\\:%*%?"<>%$]'
+
+-- ディザーを掛けられるビット深度か（整数の PCM だけ。浮動小数点には掛けない）
+function M.bits_is_fixed(bits)
+  local k = M.wav_format_key(bits)
+  return k ~= nil and k:sub(1, 3) == "pcm"
+end
+
+-- ビット深度に合う既定のディザー
+function M.default_dither(row)
+  if row.fmt == "ddp" then return "track16" end
+  if row.fmt ~= "wav" then return "none" end
+  local k = M.wav_format_key(row.bits)
+  if not M.bits_is_fixed(k) then return "none" end
+  if k == "pcm16" or k == "pcm8" then return "track16" end
+  return "track24"
+end
+
+local BITS_WORD = { pcm8 = "8", pcm16 = "16", pcm24 = "24", pcm32 = "32", fp32 = "32f", fp64 = "64f" }
+local function srate_word(sr)
+  sr = tonumber(sr) or 0
+  local k = sr / 1000
+  if k == math.floor(k) then return ("%d"):format(k) end
+  local s = ("%.1f"):format(k)
+  if tonumber(s) == k then return s end
+  return (("%.3f"):format(k):gsub("0+$", ""))
+end
+
+-- 自動のフォルダ名。WAV は「48-24」「44.1-16」「48-32f」、DDP は「DDP」、AAC/MP3 は「AAC」「MP3」
+function M.auto_folder(row)
+  if row.fmt == "wav" then
+    local k = M.wav_format_key(row.bits) or tostring(row.bits)
+    return srate_word(row.srate) .. "-" .. (BITS_WORD[k] or k)
+  end
+  return tostring(row.fmt or ""):upper()
+end
+
+-- 文字列 → 行の表（検証なし。窓が描くときに使う）。空の欄は nil ではなく "" のまま。
+function M.split_outputs(str)
+  local rows = {}
+  if type(str) ~= "string" then return rows end
+  for ent in (str .. ";"):gmatch("([^;]*);") do
+    if ent:match("%S") then
+      local f = {}
+      for x in (ent .. "|"):gmatch("([^|]*)|") do f[#f + 1] = (x:gsub("^%s+", ""):gsub("%s+$", "")) end
+      local row = { fmt = (f[1] or ""):lower(), srate = tonumber(f[2] or "") or (f[2] or ""),
+                    bits = f[3] or "", dither = f[4] or "", folder = f[5] or "", nfields = #f }
+      rows[#rows + 1] = row
+    end
+  end
+  return rows
+end
+
+-- 行の表 → 文字列
+function M.serialize_outputs(rows)
+  local out = {}
+  for _, r in ipairs(rows or {}) do
+    local sr, bits = "", ""
+    if r.fmt == "wav" then sr = tostring(math.floor(tonumber(r.srate) or 0)); bits = tostring(r.bits or "") end
+    local d = r.dither or ""
+    if r.fmt == "aac" or r.fmt == "mp3" then d = "" end
+    out[#out + 1] = table.concat({ r.fmt or "", sr, bits, d, (tostring(r.folder or ""):gsub("[|;]", "_")) }, "|")
+  end
+  return table.concat(out, ";")
+end
+
+-- 文字列 → 検証済みの行の表。戻り値: rows / nil, 理由（日本語）
+function M.parse_outputs(str)
+  if type(str) ~= "string" then return nil, "文字ではありません" end
+  local rows = M.split_outputs(str)
+  if #rows == 0 then return nil, "出力が1つもありません。「出力を追加」で1つ以上足してください" end
+  local seen, nddp = {}, 0
+  for i, r in ipairs(rows) do
+    local where = ("%d 行目"):format(i)
+    if r.nfields ~= 5 then return nil, ("%s の欄の数が違います（5 つ必要: %d）"):format(where, r.nfields) end
+    if not OUT_FMT[r.fmt] then return nil, ("%s の形式が分かりません（%s）"):format(where, r.fmt) end
+    if r.fmt == "wav" then
+      local sr = tonumber(r.srate)
+      if not sr or sr <= 0 or sr ~= math.floor(sr) or sr > 768000 then
+        return nil, ("%s のサンプルレートが正しくありません（%s）"):format(where, tostring(r.srate))
+      end
+      r.srate = sr
+      local k = M.wav_format_key(r.bits) or M.wav_format_key(tonumber(r.bits))
+      if not k then return nil, ("%s のビット深度が分かりません（%s）"):format(where, tostring(r.bits)) end
+      r.bits = k
+      if r.dither == "" then r.dither = M.default_dither(r) end
+      if not OUT_DITHER[r.dither] then return nil, ("%s のディザーが分かりません（%s）"):format(where, r.dither) end
+      if not M.bits_is_fixed(k) then r.dither = "none" end   -- 浮動小数点にはディザーを掛けない
+    else
+      if tostring(r.srate) ~= "" or r.bits ~= "" then
+        return nil, ("%s: %s はサンプルレートとビット深度を持ちません"):format(where, r.fmt:upper())
+      end
+      r.srate, r.bits = nil, nil
+      if r.fmt == "ddp" then
+        nddp = nddp + 1
+        if nddp > 1 then return nil, "DDP は1つまでです" end
+        if r.dither == "" then r.dither = "track16" end
+        if r.dither ~= "track16" and r.dither ~= "reaper" and r.dither ~= "none" then
+          return nil, ("%s: DDP のディザーは 16bit Ditherトラック / REAPERのディザー / なし のどれかです（%s）"):format(where, r.dither)
+        end
+      else
+        if r.dither ~= "" and r.dither ~= "none" then
+          return nil, ("%s: %s にはディザーを掛けられません（%s）"):format(where, r.fmt:upper(), r.dither)
+        end
+        r.dither = "none"
+      end
+    end
+    if r.folder == "" then return nil, ("%s のフォルダ名が空です"):format(where) end
+    if r.folder:find(BAD_FOLDER) or r.folder == "." or r.folder == ".." then
+      return nil, ("%s のフォルダ名「%s」に使えない文字があります（| ; / \\ : * ? \" < > $）"):format(where, r.folder)
+    end
+    local lk = r.folder:lower()
+    if seen[lk] then
+      return nil, ("フォルダ名「%s」が %d 行目と %d 行目で重なっています"):format(r.folder, seen[lk], i)
+    end
+    seen[lk] = i
+    r.nfields = nil
+  end
+  return rows
+end
+
+-- 出力の一覧に DDP があるか（窓の表示の切り替え用。壊れた文字列でも落ちない）
+function M.outputs_have(str, fmt)
+  for _, r in ipairs(M.split_outputs(str)) do if r.fmt == fmt then return true end end
+  return false
+end
+
+-- v2.4.0 までの記憶（OUT_WAV / OUT_DDP / DITHER_WAV / DITHER_DDP / WAV_SRATE / WAV_BITS / WAV_SUBDIR /
+-- DDP_SUBDIR）を OUTPUTS に直す。OUTPUTS が既にあれば古い項目を捨てるだけ。t は書き換える。
+M.MASTERING_OLD_KEYS = { "OUT_WAV", "OUT_DDP", "DITHER_WAV", "DITHER_DDP", "WAV_SRATE", "WAV_BITS",
+                         "WAV_SUBDIR", "DDP_SUBDIR" }
+function M.migrate_mastering(t)
+  if type(t) ~= "table" then return t end
+  local any = false
+  for _, k in ipairs(M.MASTERING_OLD_KEYS) do if t[k] ~= nil then any = true end end
+  if not any then return t end
+  if t.OUTPUTS == nil then
+    local rows = {}
+    if t.OUT_WAV ~= false then
+      local sr = tonumber(t.WAV_SRATE) or 48000
+      if sr <= 0 then sr = 48000 end
+      local bits = M.wav_format_key(t.WAV_BITS == nil and 24 or t.WAV_BITS) or "pcm24"
+      local r = { fmt = "wav", srate = sr, bits = bits }
+      local d = t.DITHER_WAV or "track"
+      r.dither = (d == "track") and "track24" or ((d == "reaper") and "reaper" or "none")
+      if not M.bits_is_fixed(bits) then r.dither = "none" end
+      local sub = t.WAV_SUBDIR
+      r.folder = (type(sub) == "string" and sub ~= "" and not sub:find(BAD_FOLDER)) and sub or M.auto_folder(r)
+      rows[#rows + 1] = r
+    end
+    if t.OUT_DDP ~= false then
+      local d = t.DITHER_DDP or "track"
+      local r = { fmt = "ddp", dither = (d == "track") and "track16" or ((d == "reaper") and "reaper" or "none") }
+      local sub = t.DDP_SUBDIR
+      r.folder = (type(sub) == "string" and sub ~= "" and not sub:find(BAD_FOLDER)) and sub or "DDP"
+      if #rows > 0 and r.folder:lower() == rows[1].folder:lower() then r.folder = "DDP" end
+      rows[#rows + 1] = r
+    end
+    if #rows > 0 then t.OUTPUTS = M.serialize_outputs(rows) end
+  end
+  for _, k in ipairs(M.MASTERING_OLD_KEYS) do t[k] = nil end
+  return t
 end
 
 -- ===========================================================================
@@ -126,6 +316,9 @@ local COMMON = {
   -- 2026-09-21 に MacBook Pro で、44.1kHz のプロジェクトを 0 で書き出して
   -- 出来たWAVの頭が 44100 になることを確かめた）。
   SRATE               = 48000,
+  -- FX処理のサンプルレート（v2.7.0）。0 = プロジェクトの動作レート（自動）。MASTER チェーンを通す中間
+  -- （ハード通し・Pass M）と Hardware Print のプリントはこのレートで処理する。SRATE は出力のサンプルレート。
+  FX_SRATE            = 0,
   -- サンプルレートを変える必要が出たときの変換のやり方（REAPERの「リサンプルモード」）。
   -- 番号は REAPER の一覧の並びそのもの。10 = r8brain free（最高品質、速い）。
   RESAMPLE_MODE       = 10,
@@ -202,6 +395,26 @@ local PER_TAB = {
     MASTER_BITS         = 64,                  -- 64 bit FP（旧スクリプトの FMT と同じ）
     FORMAT2             = "none",              -- 副形式は作らない（ファイルは1本だけ）
   },
+  -- Mastering（計画書/計画書_mastering.md、判断1〜8）。2MIXBUS 直下の曲ごとに
+  -- 64bit float の中間を1回だけ作り（MASTER を通るのはここだけ）、そこから 48/24 WAV と DDP を作る。
+  -- 曲目情報（CD-TEXT）とシートのURLはこの表ではなく、プロジェクトの記憶
+  -- （ProjExtState "TUKONYA_RENDER_MASTERING"）に置く（.RPP と一緒に保存される）。
+  mastering = {
+    DITHER24_TRACK_NAME = "24bit Dither",   -- 48/24 WAV 用のディザーを載せたトラック（大文字小文字は区別しない）
+    DITHER16_TRACK_NAME = "16bit Dither",   -- DDP 用のディザーを載せたトラック
+    -- 出力の一覧（v2.5.0）。1行 = 「形式|サンプルレート|ビット深度|ディザー|フォルダ名」、行は「;」で区切る。
+    --   形式 … wav / ddp / aac / mp3（DDP は1行まで）
+    --   ディザー … track24（24bit Dither トラック）/ track16（16bit Dither トラック）/ reaper / none
+    -- 既定は v2.4.0 と同じ2つ（48/24 WAV を 24bit Dither トラックで、DDP を 16bit Dither トラックで）。
+    OUTPUTS             = "wav|48000|pcm24|track24|48-24;ddp|||track16|DDP",
+    EXPORT_VERSIONS     = true,             -- 別版（曲フォルダの中のミュートした子。inst など）も書き出す（v2.6.1）
+    -- 64bit の中間ファイルと MASTER の処理のサンプルレート（v2.6.3）。0 = プロジェクトの動作レート（自動）:
+    -- プロジェクト設定でサンプルレートを固定していればその値、固定していなければオーディオ機器のレート。
+    SRATE               = 0,
+    GAP_FIRST           = 2.0,              -- 1曲目の頭までの無音（秒。REAPERの決まりで2秒以上）
+    GAP_TRACKS          = 2.0,              -- 曲間（秒）
+    STRIP_NUMBER        = true,             -- ファイル名と曲名から先頭の番号（「01 」など）を外す（判断5）
+  },
 }
 
 local function deepcopy(v)
@@ -241,6 +454,7 @@ local NONEMPTY = {
   PREVIEW_TMP_U = true, CLEAN_TMP_U = true, MASTER_SUBFOLDER = true, MIX_SUBFOLDER = true,
   CHAIN_SUBFOLDER = true, NAME_PREMASTER = true, NAME_HWINSERT = true, NAME_FALLBACK = true,
   HW_PATTERN = true, RAW_TRACK_NAME = true, DEST_TRACK_NAME = true,
+  DITHER24_TRACK_NAME = true, DITHER16_TRACK_NAME = true,
 }
 
 -- 1つのキーの値を見る。戻り値: ok, 理由
@@ -253,6 +467,11 @@ local function check_key(tab, k, v)
     end
     return true
   end
+  if k == "OUTPUTS" then
+    local _, why = M.parse_outputs(v)
+    if why then return false, "出力の一覧が正しくありません: " .. why end
+    return true
+  end
   if k == "PARA_BITS" or k == "MASTER_BITS" or k == "STEM_BITS" then
     -- 数字（8/16/24/32/64。昔の書き方）でも、名前（"pcm24" など）でも受ける
     if not M.wav_format_key(v) then
@@ -260,9 +479,18 @@ local function check_key(tab, k, v)
     end
     return true
   end
-  if k == "SRATE" then
+  if k == "SRATE" or k == "FX_SRATE" then
     -- 0 は「プロジェクトと同じ」。それ以外は正の数。
-    if type(v) ~= "number" or v < 0 then return false, "SRATE は 0（プロジェクトと同じ）か正の数にしてください" end
+    if type(v) ~= "number" or v < 0 then return false, ("%s は 0（プロジェクトと同じ）か正の数にしてください"):format(k) end
+    return true
+  end
+  if k == "GAP_FIRST" then
+    -- REAPERの決まり: 1曲目の INDEX1 は 2 秒以降（[ddp_help]）
+    if type(v) ~= "number" or v < 2 or v > 60 then return false, "1曲目の前の無音は 2〜60 秒にしてください" end
+    return true
+  end
+  if k == "GAP_TRACKS" then
+    if type(v) ~= "number" or v < 0 or v > 60 then return false, "曲間は 0〜60 秒にしてください" end
     return true
   end
   if k == "RESAMPLE_MODE" then
@@ -321,6 +549,7 @@ function M.merge(tab, loaded)
   if not s then return nil, { ("知らないタブです: %s"):format(tostring(tab)) } end
   local w = {}
   if type(loaded) ~= "table" then return s, w end
+  if tab == "mastering" then loaded = M.migrate_mastering(deepcopy(loaded)) end
   for k, v in pairs(loaded) do
     if k ~= "TAB" then
       local ok, why = check_key(tab, k, v)
@@ -375,7 +604,9 @@ local function ser(v, indent)
     return ("%.17g"):format(v)
   end
   if t ~= "table" then error("設定に入れられない値です: " .. t) end
-  local pad, pad2 = string.rep(" ", indent), string.rep(" ", indent + 2)
+  -- v2.6.4: 1 行で書く（改行を入れない）。REAPER は ExtState の値を reaper-extstate.ini に 1 行で残すので、
+  -- 改行があると再起動のあとに最初の行（「return {」）しか戻らなかった（2026-09-25 つこさんの Studio で確認）。
+  local pad, pad2 = "", " "
   local out = { "{" }
   local n = #v
   if n > 0 then
@@ -392,12 +623,13 @@ local function ser(v, indent)
   for _, k in ipairs(keys) do
     out[#out + 1] = ("%s[%s] = %s,"):format(pad2, quote(k), ser(v[k], indent + 2))
   end
-  out[#out + 1] = pad .. "}"
-  return table.concat(out, "\n")
+  out[#out + 1] = pad .. " }"
+  return table.concat(out, "")
 end
 
+-- 1 行（改行を含まない）。文字の中の改行は \n と書く（%q の「\ と改行」を直す）。deserialize がその逆。
 function M.serialize(t)
-  return "return " .. ser(t, 0) .. "\n"
+  return "return " .. ser(t, 0)
 end
 
 -- 文字列を表に戻す。安全のため、何も呼べない空の環境で読む。

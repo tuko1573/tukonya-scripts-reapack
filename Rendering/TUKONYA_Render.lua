@@ -5,6 +5,8 @@
 
   Phase 3 で4タブとも動くようになった
   （2mix Render / 2mix Preview / Para + 2mix / Hardware Print）。
+  v2.4.0 で5つ目の Mastering（48/24 WAV と DDP）を足した。
+  v2.5.0 で Mastering の「出力」を一覧（行を足す・消す、形式ごとの欄）にした。
 
   このファイルがやるのは「描くこと」だけ。何を出すか・どう書き出すかは
   tukonya_render_model.lua が持っている（窓を開かなくても試験できるように分けてある）。
@@ -22,7 +24,7 @@ local Model = dofile(SCRIPT_DIR .. "tukonya_render_model.lua")
 local S     = Model.S
 local Store = Model.Store
 
-local VERSION = "2.2.3"            -- 配布物の版。窓の見出しに出る
+local VERSION = "2.7.3"            -- 配布物の版。窓の見出しに出る
 local NAME    = "TUKONYA RENDER"
 local TITLE   = NAME .. "  v" .. VERSION   -- 窓の見出し（ImGuiの窓の名前でもある）
 local NS      = "TUKONYA_RENDER"
@@ -78,13 +80,20 @@ end
 -- ===========================================================================
 -- 状態
 -- ===========================================================================
--- 最初に開くタブ。無人試験は ExtState で指定する（人が開くときは Para + 2mix）。
+-- 最初に開くタブ。無人試験は ExtState で指定する。人が開くときは、この曲で最後に選んだタブ
+-- （プロジェクトに覚えてある。v2.7.3）、初めての曲なら 2mix Render。
 local function first_tab()
-  local want = reaper.GetExtState(NS, "tab")
-  for _, t in ipairs(Model.TAB_LABELS) do
-    if t.tab == want then return want end
+  local function known(want)
+    for _, t in ipairs(Model.TAB_LABELS) do
+      if t.tab == want and t.ready then return want end
+    end
+    return nil
   end
-  return "para"
+  local want = known(reaper.GetExtState(NS, "tab"))
+  if want then return want end
+  local okl, last = pcall(Store.load_last_tab)
+  want = okl and known(last) or nil
+  return want or "mix2"
 end
 
 local app = {
@@ -107,11 +116,13 @@ local app = {
 app.st = Model.load(app.tab)
 
 local function reload_state(tab)
+  if tab ~= app.tab then pcall(Store.save_last_tab, tab) end   -- 次にこの曲で開いたとき同じタブにする
   app.tab = tab
   app.st = Model.load(tab)
   app.view = "settings"
   app.result = nil
   app.diag_sc, app.diag_path, app.diag_err = nil, nil, nil
+  app.meta_msg = nil
 end
 
 -- 開いているあいだ、読み取り（範囲・ディザー・ハード）は少しずつ見直す。
@@ -178,6 +189,146 @@ local function combo_items(options)
   return table.concat(t, "\0") .. "\0"
 end
 
+-- ---------------------------------------------------------------------------
+-- Mastering の曲目情報（CD-TEXT）。値はプロジェクトに保存（Model.mst_meta_save）。
+-- シートの取り込みは描画の外（次のフレームの頭）で行う。
+-- ---------------------------------------------------------------------------
+local function meta_track(meta, i)
+  meta.tracks = meta.tracks or {}
+  for k = #meta.tracks + 1, i do
+    meta.tracks[k] = { no = k, title = "", performer = "", songwriter = "", composer = "", arranger = "", isrc = "" }
+  end
+  return meta.tracks[i]
+end
+
+local function meta_cell(ctx, id, tbl, key, on_change)
+  ImGui.SetNextItemWidth(ctx, -1)
+  local rv, v = ImGui.InputText(ctx, id, tostring((tbl and tbl[key]) or ""))
+  if rv then on_change(v) end
+  if ImGui.IsItemDeactivatedAfterEdit(ctx) then app.meta_dirty = true end
+end
+
+local function draw_meta(ctx)
+  local st = app.st
+  st.meta = st.meta or Store.empty_meta()
+  local meta = st.meta
+  ImGui.PushID(ctx, "mst_meta")
+
+  label_cell(ctx, "シートのURL:")
+  ImGui.SetNextItemWidth(ctx, -170)
+  local rv, v = ImGui.InputText(ctx, "##sheet_url", tostring(st.sheet_url or ""))
+  if rv then st.sheet_url = v end
+  if ImGui.IsItemDeactivatedAfterEdit(ctx) then Store.save_sheet_url(st.sheet_url) end
+  ImGui.SameLine(ctx)
+  if ImGui.Button(ctx, "シートから取り込む") then app.pending_import = true end
+  draw_note(ctx, "共有が「リンクを知っている人」のシートから読み込みます。下の欄に直接書くこともできます。")
+  if app.meta_msg then ImGui.TextWrapped(ctx, app.meta_msg) end
+
+  ImGui.Dummy(ctx, 1, 4)
+  ImGui.Text(ctx, "アルバム")
+  local flags = ImGui.TableFlags_Borders | ImGui.TableFlags_SizingStretchSame
+  if ImGui.BeginTable(ctx, "album", #Model.META_FIELDS_ALBUM, flags) then
+    for _, f in ipairs(Model.META_FIELDS_ALBUM) do ImGui.TableSetupColumn(ctx, f[2]) end
+    ImGui.TableHeadersRow(ctx)
+    ImGui.TableNextRow(ctx)
+    for _, f in ipairs(Model.META_FIELDS_ALBUM) do
+      ImGui.TableNextColumn(ctx)
+      meta_cell(ctx, "##a_" .. f[1], meta.album, f[1], function(x) meta.album[f[1]] = x end)
+    end
+    ImGui.EndTable(ctx)
+  end
+
+  ImGui.Dummy(ctx, 1, 4)
+  ImGui.Text(ctx, "トラック（上から順に トラック N ↔ シート N 行目）")
+  local songs = ((st.detect or {}).mst or {}).songs or {}
+  local n = math.max(#songs, #(meta.tracks or {}))
+  if ImGui.BeginTable(ctx, "tracks", 1 + #Model.META_FIELDS_TRACK, flags) then
+    ImGui.TableSetupColumn(ctx, "トラック", ImGui.TableColumnFlags_WidthFixed, 150)
+    for _, f in ipairs(Model.META_FIELDS_TRACK) do ImGui.TableSetupColumn(ctx, f[2]) end
+    ImGui.TableHeadersRow(ctx)
+    for i = 1, n do
+      ImGui.TableNextRow(ctx)
+      ImGui.TableNextColumn(ctx)
+      ImGui.AlignTextToFramePadding(ctx)
+      ImGui.Text(ctx, ("%d %s"):format(i, songs[i] and songs[i].name or "（トラックなし）"))
+      local t = (meta.tracks or {})[i]
+      for _, f in ipairs(Model.META_FIELDS_TRACK) do
+        ImGui.TableNextColumn(ctx)
+        meta_cell(ctx, ("##t%d_%s"):format(i, f[1]), t, f[1], function(x) meta_track(meta, i)[f[1]] = x end)
+      end
+    end
+    ImGui.EndTable(ctx)
+  end
+  for _, w in ipairs(Model.mst_meta_warnings(st, meta)) do ImGui.TextWrapped(ctx, "注意: " .. tostring(w)) end
+  ImGui.PopID(ctx)
+end
+
+-- ---------------------------------------------------------------------------
+-- Mastering の出力の一覧。行ごとに 形式・（WAV: サンプルレート・ビット深度）・削除、
+-- その下に ディザー（整数のWAVと DDP だけ）・フォルダ名・書き出し先の見本。
+-- 値は ui.OUTPUTS（1本の文字列）に入れ直す。足す・消す・選び直しの決まりは Model が持つ。
+-- ---------------------------------------------------------------------------
+local function combo_pick(ctx, id, width, options, value)
+  local cur = 0
+  for i, o in ipairs(options) do if o[1] == value then cur = i - 1 end end
+  ImGui.SetNextItemWidth(ctx, width)
+  local rv, idx = ImGui.Combo(ctx, id, cur, combo_items(options))
+  if rv then return true, options[idx + 1][1] end
+  return false
+end
+
+local function draw_outputs(ctx)
+  local st = app.st
+  local rows = Model.mst_rows(st)
+  local changed, remove = false, nil
+  local function change(i, field, v)
+    local okc, why = Model.mst_change_row(rows, i, field, v)
+    if okc then changed = true else app.message = why end
+  end
+  if #rows == 0 then draw_note(ctx, "出力がありません。「出力を追加」で足してください。") end
+  for i, r in ipairs(rows) do
+    ImGui.PushID(ctx, "out" .. i)
+    if i > 1 then ImGui.Dummy(ctx, 1, 4) end
+    label_cell(ctx, ("出力 %d:"):format(i))
+    local rv, v = combo_pick(ctx, "##fmt", 110, Model.MST_FORMAT_OPTIONS, r.fmt)
+    if rv then change(i, "fmt", v) end
+    local f = Model.mst_row_fields(r)
+    if f.srate then
+      ImGui.SameLine(ctx)
+      rv, v = combo_pick(ctx, "##srate", 110, Model.MST_SRATE_OPTIONS, tonumber(r.srate))
+      if rv then change(i, "srate", v) end
+    end
+    if f.bits then
+      ImGui.SameLine(ctx)
+      rv, v = combo_pick(ctx, "##bits", 130, Model.WAV_OPTIONS, r.bits)
+      if rv then change(i, "bits", v) end
+    end
+    if r.fmt == "ddp" then
+      ImGui.SameLine(ctx)
+      ImGui.AlignTextToFramePadding(ctx)
+      ImGui.TextDisabled(ctx, "44100 Hz / 16 bit（CD の決まり）")
+    end
+    ImGui.SameLine(ctx)
+    if ImGui.Button(ctx, "削除") then remove = i end
+    f = Model.mst_row_fields(r)
+    if f.dither then
+      label_cell(ctx, "    ディザー:")
+      rv, v = combo_pick(ctx, "##dither", 250, (r.fmt == "ddp") and Model.MST_DITHER_DDP or Model.MST_DITHER_WAV, r.dither)
+      if rv then change(i, "dither", v) end
+    end
+    label_cell(ctx, "    フォルダ名:")
+    ImGui.SetNextItemWidth(ctx, 250)
+    local rv2, v2 = ImGui.InputText(ctx, "##folder", tostring(r.folder or ""))
+    if rv2 then change(i, "folder", v2) end
+    draw_note(ctx, Model.mst_row_dest(st, r))
+    ImGui.PopID(ctx)
+  end
+  if remove then table.remove(rows, remove); changed = true end
+  ImGui.Dummy(ctx, 1, 4)
+  if ImGui.Button(ctx, "出力を追加") then rows[#rows + 1] = Model.mst_new_row(rows); changed = true end
+  if changed then Model.mst_set_rows(st, rows) end
+end
+
 local function draw_row(ctx, row, ui)
   -- 「チェックを入れたときだけ出る欄」（row.when）
   if row.when then
@@ -224,6 +375,8 @@ local function draw_row(ctx, row, ui)
     ImGui.PopID(ctx)
     return
   end
+  if row.kind == "meta" then draw_meta(ctx); return end
+  if row.kind == "outputs" then draw_outputs(ctx); return end
   if row.kind == "info" then
     label_cell(ctx, row.label)
     -- row.grey が立っている行は、下に出る読み取り専用の1行と同じ灰色で出す
@@ -284,6 +437,8 @@ end
 
 -- 枠で囲んだひと区切り（REAPERの書き出し画面と同じ見た目）
 local function draw_section(ctx, sec, ui)
+  -- 区切りごと出したり消したりするもの（Mastering の曲目情報は DDP があるときだけ）
+  if sec.visible and not Model.visible(app.st, sec.visible) then return end
   local open
   if sec.collapsible then
     open = ImGui.CollapsingHeader(ctx, sec.label)   -- 「詳細」は最初は閉じている
@@ -332,6 +487,8 @@ local function draw_settings(ctx)
   end
 
   for _, w in ipairs(st.warns or {}) do ImGui.TextWrapped(ctx, "注意: " .. tostring(w)) end
+  -- 書き出しは止めない注意（Mastering の構造の点検など）
+  for _, w in ipairs(Model.warn_lines(st)) do ImGui.TextWrapped(ctx, "注意: " .. tostring(w)) end
   if app.message then ImGui.TextWrapped(ctx, app.message) end
 end
 
@@ -459,6 +616,24 @@ local function frame()
       else app.diag_path, app.diag_err = p, (not p) and tostring(err) or nil end
     end
   end
+  if app.pending_import then
+    -- Mastering: シートから曲目情報を取り込む（通信は描画の外で）
+    app.pending_import = false
+    local ok, meta, err, warns = pcall(Model.mst_import, app.st.sheet_url)
+    if not ok then
+      app.meta_msg = "取り込めませんでした: " .. tostring(meta)
+    elseif not meta then
+      app.meta_msg = tostring(err)
+    else
+      app.st.meta = meta
+      app.meta_msg = ("シートから取り込みました（曲 %d 行）。"):format(#(meta.tracks or {}))
+        .. ((warns and #warns > 0) and ("\n" .. table.concat(warns, "\n")) or "")
+    end
+  end
+  if app.meta_dirty then
+    app.meta_dirty = false
+    if app.st.meta then pcall(Model.mst_meta_save, app.st.meta) end
+  end
   if app.pending_run then
     app.pending_run = false
     local ok, err = pcall(do_run)
@@ -476,7 +651,28 @@ local function frame()
 
   if app.font then pcall(ImGui.PushFont, ctx, app.font, 14) end
   ImGui.SetNextWindowSize(ctx, 780, 700, ImGui.Cond_FirstUseEver)
-  local visible, open = ImGui.Begin(ctx, TITLE, true)
+  if app.test_hook and app.frame_no <= 5 then
+    -- 無人試験の画面写真用: 前回の位置（別の画面の外など）やドッキングを引き継がず、
+    -- 画面の左上に、中身が見える大きさで手前に出す。人が開くときは通らない。
+    pcall(ImGui.SetNextWindowDockID, ctx, 0, ImGui.Cond_Always)
+    ImGui.SetNextWindowPos(ctx, 40, 60, ImGui.Cond_Always)
+    ImGui.SetNextWindowSize(ctx, 900, 1040, ImGui.Cond_Always)
+    ImGui.SetNextWindowFocus(ctx)
+  end
+  -- 無人試験のときだけ「いつも手前」（他の REAPER や App の窓に隠れて写真に写らないため）
+  local wflags = 0
+  if app.test_hook then
+    local okt, tf = pcall(function() return ImGui.WindowFlags_TopMost end)
+    if okt and type(tf) == "number" then wflags = tf end
+  end
+  local visible, open = ImGui.Begin(ctx, TITLE, true, wflags)
+  if app.test_hook then
+    local okp, px, py = pcall(ImGui.GetWindowPos, ctx)
+    local oks, sw, sh = pcall(ImGui.GetWindowSize, ctx)
+    local okd, dk = pcall(ImGui.IsWindowDocked, ctx)
+    reaper.SetExtState(NS, "autorun_winpos", ("visible=%s pos=%s,%s size=%s,%s docked=%s"):format(tostring(visible),
+      tostring(okp and px), tostring(okp and py), tostring(oks and sw), tostring(oks and sh), tostring(okd and dk)), false)
+  end
   if visible then
     if ImGui.BeginTabBar(ctx, "tukonya_tabs") then
       for _, t in ipairs(Model.TAB_LABELS) do
@@ -513,8 +709,10 @@ local function frame()
 
   -- 無人試験の入口: ExtState で「開いたら書き出しまでやる」と言われていたら押す
   -- 望みのタブが選ばれきってから押す（タブの切り替えは1フレーム遅れることがある）
+  -- 試験台が "autorun_go"=0 にしているあいだは押さない（設定画面の写真を撮るため）
   if app.autorun and not app.autorun_fired and app.frame_no >= 3
-     and not app.want_tab and app.view == "settings" then
+     and not app.want_tab and app.view == "settings"
+     and reaper.GetExtState(NS, "autorun_go") ~= "0" then
     app.autorun_fired = true
     -- 人が押すときと同じ関門を通す。押せない状態なら、書き出さずにその理由を外へ返す
     -- （無人試験でも「押せなくなる不具合」が見つかるように）。
