@@ -190,6 +190,22 @@ function M.save_last_tab(tab, api)
   api.SetProjExtState(0, M.SECTION, M.LAST_TAB_KEY, tostring(tab or ""))
 end
 
+-- この曲で「混じる可能性」の確認画面を飛ばすか（v2.9.0、Para + 2mix）。
+-- ui には入れない: ui は「既定として保存」で REAPER 全体の既定にも写るので、
+-- 「聞かない」が全部の曲に広がってしまう。曲ごとの目印としてだけ持つ。
+M.BLEED_SKIP_KEY = "bleed_skip_para"
+function M.load_bleed_skip(api)
+  api = api_of(api)
+  local ok, text = api.GetProjExtState(0, M.SECTION, M.BLEED_SKIP_KEY)
+  if not ok or ok == 0 then return false end
+  return tostring(text) == "1"
+end
+function M.save_bleed_skip(on, api)
+  api = api_of(api)
+  api.SetProjExtState(0, M.SECTION, M.BLEED_SKIP_KEY, on and "1" or "")
+end
+function M.clear_bleed_skip(api) M.save_bleed_skip(false, api) end
+
 -- 窓の値のうち、記憶する項目だけを抜き出す
 function M.pick(values, keys)
   local t = {}

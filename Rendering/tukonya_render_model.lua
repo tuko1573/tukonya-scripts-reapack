@@ -383,6 +383,18 @@ function M.detect(tab)
     d.sel_track = reaper.GetSelectedTrack(0, 0)
     d.sel_track_guid = d.sel_track and reaper.GetTrackGUID(d.sel_track) or nil
   end
+  -- v2.9.0: 選んだトラック全部（Para + 2mix の「混じる可能性」の一覧に使う）と、
+  -- 選び直したことが分かる目印（GUID を並べたもの＋トラックの本数）
+  d.sel_list = {}
+  do
+    local g = {}
+    for i = 0, d.sel_tracks - 1 do
+      local tr = reaper.GetSelectedTrack(0, i)
+      d.sel_list[#d.sel_list + 1] = tr
+      g[#g + 1] = tostring(reaper.GetTrackGUID(tr))
+    end
+    d.sel_sig = table.concat(g, ",") .. "|" .. tostring(d.track_count)
+  end
   -- 2mix Preview の透かし用トラック
   if base.PREVIEW_TRACK_NAME then
     d.preview_track = find_track_by_name(base.PREVIEW_TRACK_NAME)
@@ -738,6 +750,26 @@ function M.sc_preview(st)
   return { guid = g, ntracks = d.track_count, lines = C.sc_state_text(plan) }
 end
 
+-- v2.9.0: 「混じる可能性」の一覧（Para + 2mix、親トラック経由が有効のとき）。書き出さず読むだけ。
+-- 戻り値: { sig = 選択の目印, items = core.bleed_preview の結果, lines = 表示の行 }
+-- 対象外（別タブ・親トラック経由が無効・選択なし）は items が空。
+function M.bleed_preview(st)
+  local d = st.detect
+  local res = { sig = d.sel_sig or "", items = {}, lines = {} }
+  if st.tab ~= "para" or not st.ui.PARA_VIA_PARENT then return res end
+  if (d.sel_tracks or 0) == 0 or not d.sel_list then return res end
+  local C = core()
+  res.items = C.bleed_preview(d.bus, d.master, d.sel_list)
+  res.lines = C.bleed_lines(res.items)
+  return res
+end
+function M.bleed_stale(st, cur)
+  return (not cur) or cur.sig ~= (st.detect.sel_sig or "")
+end
+-- この曲で確認画面を飛ばすか（Store の目印をそのまま読む・書く）
+function M.bleed_skip(api) return Store.load_bleed_skip(api) end
+function M.set_bleed_skip(on, api) Store.save_bleed_skip(on, api) end
+
 -- 資料の置き場（実行記録と同じフォルダ。書けなければ REAPER のリソースフォルダ）
 function M.structure_dirs(st)
   local def = S.defaults(st.tab)
@@ -911,12 +943,14 @@ end
 
 -- st … M.load が返した状態（ui を窓で書き換えたもの）
 -- 戻り値: res（core の結果）, cfg
-function M.run(st, api)
+-- opts.bleed_acked … 窓で「混じる可能性」の一覧を見て一括で OK した（core の途中の小窓を出さない）
+function M.run(st, api, opts)
   local cfg, err, warns = M.build_job(st.tab, st.ui)
   if not cfg then return { ok = false, aborted = err }, nil end
   -- 窓からの実行であることの目印。確認の窓（親経由パラの「混じる可能性」）は
   -- 人が見ているときだけ出す。無人実行（Headless）ではここを通らないので立たない。
   cfg.INTERACTIVE = true
+  cfg.BLEED_ACKED = (opts and opts.bleed_acked) and true or false
   -- この曲の記憶は「書き出し」のたびに自動で保存する（判断3）
   Store.save_project(st.tab, Store.pick(st.ui, st.keys or M.stored_keys(st.tab)), api)
   -- Mastering: 窓で直した曲目情報を、書き出す前に必ずプロジェクトへ書いておく（core はそこから読む）
@@ -1284,6 +1318,7 @@ end
 -- この曲の記憶だけを消して、既定の値（REAPER全体の既定 → 読み取り → 初期値）に戻す
 function M.reset(st, api)
   Store.clear_project(st.tab, api)
+  if st.tab == "para" then Store.clear_bleed_skip(api) end   -- v2.9.0: 「次から聞かない」もこの曲の記憶
   local fresh = M.load(st.tab, api)
   st.ui, st.src, st.warns, st.detect = fresh.ui, fresh.src, fresh.warns, fresh.detect
   return st

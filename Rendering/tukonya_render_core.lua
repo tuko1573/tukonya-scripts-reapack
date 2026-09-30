@@ -23,11 +23,13 @@
 local DIR = debug.getinfo(1, "S").source:match("@(.*[/\\])") or ""
 local S = dofile(DIR .. "tukonya_render_settings.lua")
 
-local C = { DIR = DIR, Settings = S, VERSION = "2.8.1" }
+local C = { DIR = DIR, Settings = S, VERSION = "2.9.0" }
 
 -- 親経由パラ（規則4）で「音が混じるかもしれない」ときに、窓からの実行だけ
 -- 「続行／キャンセル」を出すかどうか。将来やめるときはここを false にする。
 -- 無人実行（Headless）は cfg.INTERACTIVE が立たないので、この値に関わらず記録だけ。
+-- v2.9.0: 窓は書き出す前に全トラック分の一覧を見せて一括で OK を取り（cfg.BLEED_ACKED）、
+-- そのときはこの途中の小窓は出さない。ここは、窓が一覧を作れなかったときの保険。
 C.BLEED_DIALOG = true
 
 -- ===========================================================================
@@ -959,6 +961,35 @@ end
 function C.para_plan_preview(BUS, MASTER, T)
   if not T then return nil, "トラックが選ばれていません。" end
   return build_para_plan({ BUS = BUS, MASTER = MASTER }, T)
+end
+
+-- v2.9.0: 選んだトラック全部の「混じる可能性」を、書き出す前にまとめて読む（プロジェクトには触れない）。
+-- 実行中の判定（規則4）と同じ build_para_plan を使うので、ここに出たものだけが実行中にも出る。
+-- 戻り値: { { name = 書き出すトラック名, bleed = { "送り元 → 受け先", ... } }, ... }（混じりのある T だけ、選んだ順）
+function C.bleed_preview(BUS, MASTER, tracks)
+  local out = {}
+  for _, T in ipairs(tracks or {}) do
+    if reaper.ValidatePtr(T, "MediaTrack*") then
+      local plan = build_para_plan({ BUS = BUS, MASTER = MASTER }, T)
+      if plan and #plan.bleed > 0 then
+        local _, tn = reaper.GetTrackName(T)
+        out[#out + 1] = { name = tostring(tn), bleed = plan.bleed }
+      end
+    end
+  end
+  return out
+end
+
+-- 一覧の文（窓の設定画面・確認画面・記録で同じものを使う）。
+--   『KICK』の書き出しに混じる可能性:
+--     BASSROOM → BASSES
+function C.bleed_lines(items)
+  local t = {}
+  for _, it in ipairs(items or {}) do
+    t[#t + 1] = ("『%s』の書き出しに混じる可能性:"):format(it.name)
+    for _, b in ipairs(it.bleed) do t[#t + 1] = "    " .. b end
+  end
+  return t
 end
 
 -- トラックの番号（1から数える。窓では「128:Dr_KICK」のように出す）
@@ -2560,7 +2591,7 @@ function FLOW.para(j)
         -- 規則4: 混じりが残るときは、窓からの実行だけ「続行／キャンセル」を出す
         if pl and #pl.bleed > 0 then
           j:log("混じる可能性: %s", table.concat(pl.bleed, " / "))
-          if C.BLEED_DIALOG and cfg.INTERACTIVE and not cfg.DRY_RUN then
+          if C.BLEED_DIALOG and cfg.INTERACTIVE and not cfg.BLEED_ACKED and not cfg.DRY_RUN then
             local msg = ("『%s』の書き出しで、ほかのトラックの音が混じる可能性があります。\n\n%s\n\n続けますか？")
               :format(tn, table.concat(pl.bleed, "\n"))
             if reaper.ShowMessageBox(msg, "TUKONYA RENDER", 1) ~= 1 then  -- 1 = OK / それ以外 = キャンセル
