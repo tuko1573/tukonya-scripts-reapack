@@ -24,7 +24,7 @@ local Model = dofile(SCRIPT_DIR .. "tukonya_render_model.lua")
 local S     = Model.S
 local Store = Model.Store
 
-local VERSION = "2.8.1"            -- 配布物の版。窓の見出しに出る
+local VERSION = "2.9.0"            -- 配布物の版。窓の見出しに出る
 local NAME    = "TUKONYA RENDER"
 local TITLE   = NAME .. "  v" .. VERSION   -- 窓の見出し（ImGuiの窓の名前でもある）
 local NS      = "TUKONYA_RENDER"
@@ -105,6 +105,8 @@ local app = {
   result   = nil,          -- 書き出しの結果
   message  = nil,          -- 画面下の一言
   pending_run = false,
+  bleed_ack = false,       -- 「混じる可能性」の一覧を見て一括で OK した（次の書き出し 1 回だけ有効）
+  bleed = nil,             -- 設定画面に出す一覧（選択が変わったときだけ作り直す）
   pending_browse = false,
   last_detect = 0,
   autorun  = (reaper.GetExtState(NS, "autorun") == "1"),  -- 無人試験用の入口
@@ -123,6 +125,7 @@ local function reload_state(tab)
   app.result = nil
   app.diag_sc, app.diag_path, app.diag_err = nil, nil, nil
   app.meta_msg = nil
+  app.bleed, app.bleed_ack = nil, false
 end
 
 -- 開いているあいだ、読み取り（範囲・ディザー・ハード）は少しずつ見直す。
@@ -139,7 +142,9 @@ end
 -- 書き出し（描画の外で呼ぶこと）
 -- ===========================================================================
 local function do_run()
-  local res, cfg = Model.run(app.st)
+  local acked = app.bleed_ack
+  app.bleed_ack = false
+  local res, cfg = Model.run(app.st, nil, { bleed_acked = acked })
   app.result = res
   app.cfg = cfg
   app.view = "done"
@@ -456,6 +461,65 @@ local function draw_section(ctx, sec, ui)
   ImGui.Dummy(ctx, 1, 6)   -- 区切りのあいだを空ける
 end
 
+-- ===========================================================================
+-- 「混じる可能性」の一覧（v2.9.0、Para + 2mix）
+-- ===========================================================================
+-- 一覧の中身。設定画面と確認画面で同じものを出す。max_h … 枠の高さの上限（超えたらスクロール）。
+local function draw_bleed_list(ctx, bl, max_h)
+  if not bl then return end
+  local n = #bl.lines
+  if n == 0 then
+    if (app.st.detect.sel_tracks or 0) == 0 then
+      ImGui.TextDisabled(ctx, "混じる可能性: トラックを選ぶとここに出ます")
+    else
+      ImGui.TextDisabled(ctx, "混じる可能性: なし（選んだトラックに、ほかの音は混じりません）")
+    end
+  else
+    ImGui.Text(ctx, ("混じる可能性: %d トラック"):format(#bl.items))
+    local h = math.min(max_h, n * ImGui.GetTextLineHeightWithSpacing(ctx) + 12)
+    if ImGui.BeginChild(ctx, "bleed_list", 0, h, ImGui.ChildFlags_Borders) then
+      for _, line in ipairs(bl.lines) do ImGui.Text(ctx, line) end
+      ImGui.EndChild(ctx)
+    end
+  end
+  -- この曲だけの目印（既定には入らない）。確認画面から戻せるよう設定画面にも置く。
+  local skip = Model.bleed_skip()
+  local rv, v = ImGui.Checkbox(ctx, "今後この曲では確認ダイアログを表示しない", skip)
+  if rv then Model.set_bleed_skip(v) end
+  ImGui.Dummy(ctx, 1, 4)
+end
+
+-- 「書き出し」を押したとき。一覧はその場で作り直す（送りの変更は選択の目印に出ないため）。
+local function request_run()
+  app.bleed_ack = false
+  if app.st.tab == "para" and app.st.ui.PARA_VIA_PARENT then
+    local ok, v = pcall(Model.bleed_preview, app.st)
+    if ok and v and #v.items > 0 and not Model.bleed_skip() then
+      app.bleed = v
+      app.view = "confirm"
+      return
+    end
+    if ok then app.bleed_ack = true end   -- 一覧を見せた（空か、この曲では聞かない）＝途中の小窓も出さない
+  end
+  app.pending_run = true
+end
+
+-- 確認画面。一覧＋「このまま書き出す」「戻る」。
+local function draw_confirm(ctx)
+  ImGui.TextWrapped(ctx, "次のトラックには、ほかのトラックの音が混じる可能性があります。"
+    .. "そのまま書き出してよければ「このまま書き出す」を押してください。")
+  ImGui.Dummy(ctx, 1, 4)
+  draw_bleed_list(ctx, app.bleed, 420)
+  ImGui.Separator(ctx)
+  if ImGui.Button(ctx, "このまま書き出す", 160, 30) then
+    app.bleed_ack = true
+    app.view = "settings"
+    app.pending_run = true
+  end
+  ImGui.SameLine(ctx)
+  if ImGui.Button(ctx, "戻る", 100, 30) then app.view = "settings" end
+end
+
 local function draw_settings(ctx)
   local st = app.st
   for _, sec in ipairs(Model.ROWS[st.tab]) do draw_section(ctx, sec, st.ui) end
@@ -475,9 +539,20 @@ local function draw_settings(ctx)
   ImGui.TextDisabled(ctx, "この曲に覚えた内容だけを消します（既定は消しません）。")
 
   ImGui.Separator(ctx)
+  -- v2.9.0: Para + 2mix（親トラック経由が有効）では、書き出す前から「混じる可能性」の一覧を出す。
+  -- 選んだトラックが変わったときだけ作り直す（毎フレームは作らない）。
+  if st.tab == "para" and st.ui.PARA_VIA_PARENT then
+    if Model.bleed_stale(st, app.bleed) then
+      local ok, v = pcall(Model.bleed_preview, st)
+      app.bleed = ok and v or { sig = st.detect.sel_sig or "", items = {}, lines = { "一覧を作れませんでした: " .. tostring(v) } }
+    end
+    draw_bleed_list(ctx, app.bleed, 160)
+  else
+    app.bleed = nil
+  end
   local can_run, why = Model.gate(st)
   if not can_run then ImGui.BeginDisabled(ctx) end
-  if ImGui.Button(ctx, "書き出し", 140, 30) then app.pending_run = true end
+  if ImGui.Button(ctx, "書き出し", 140, 30) then request_run() end
   if not can_run then ImGui.EndDisabled(ctx) end
   ImGui.SameLine(ctx)
   if ImGui.Button(ctx, "閉じる", 100, 30) then app.close = true end
@@ -691,6 +766,8 @@ local function frame()
             ImGui.Text(ctx, "このタブはまだ作っていません。")
           elseif app.view == "done" then
             draw_done(ctx)
+          elseif app.view == "confirm" then
+            draw_confirm(ctx)
           else
             draw_settings(ctx)
           end
@@ -718,6 +795,7 @@ local function frame()
     -- （無人試験でも「押せなくなる不具合」が見つかるように）。
     local can, why = Model.gate(app.st)
     if can then
+      app.bleed_ack = true   -- 無人試験は確認画面を通らない（旧: 小窓を OK で返していたのと同じ）
       app.pending_run = true
     else
       reaper.SetExtState(NS, "autorun_text", "書き出せません: " .. tostring(why), false)
