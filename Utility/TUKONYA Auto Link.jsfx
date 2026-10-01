@@ -1,0 +1,79 @@
+desc:TUKONYA Auto Link
+//tags: utility automation link
+//author: TUKONYA
+// 目印のエフェクト。音には何もしない。同じ Link Ch を選んだトラック同士で、
+// チェックを入れた種類の線（オートメーション）を、見張りのスクリプト「TUKONYA_Auto Link」がそろえる。
+// チェックの状態は同じ Ch のトラック全部で共通（どれかで変えると、ほかも変わる）。
+slider1:link_ch=0<0,16,1{Off,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16}>Link Ch
+slider2:link_mask=1<0,255,1>-Link Types
+in_pin:none
+out_pin:none
+options:gmem=TUKONYA_AutoLink
+
+@init
+al_last_hb = -1;
+al_last_t = 0;
+al_prev_down = 0;
+al_ch = floor(link_ch + 0.5);
+
+function al_label(i) (
+  i == 0 ? "ミュート" : i == 1 ? "音量" : i == 2 ? "パン" : i == 3 ? "Width" :
+  i == 4 ? "トリミング量" : i == 5 ? "音量(Pre-FX)" : i == 6 ? "パン(Pre-FX)" : "パン幅(Pre-FX)";
+);
+
+@slider
+al_ch = floor(link_ch + 0.5);
+
+@gfx 360 290
+al_now = time_precise();
+al_hb = gmem[0];
+al_hb != al_last_hb ? ( al_last_hb = al_hb; al_last_t = al_now; );
+al_alive = al_hb > 0 && (al_now - al_last_t) < 1.5;
+al_mask = floor(link_mask + 0.5);
+gfx_set(0.12, 0.12, 0.14, 1); gfx_x = 0; gfx_y = 0; gfx_rect(0, 0, gfx_w, gfx_h);
+gfx_setfont(1, "Hiragino Sans", 30);
+gfx_set(1, 1, 1, 1); gfx_x = 14; gfx_y = 10;
+al_ch == 0 ? gfx_drawstr("Link Ch  Off") : ( gfx_drawstr("Link Ch  "); gfx_drawnumber(al_ch, 0); );
+gfx_setfont(2, "Hiragino Sans", 15);
+gfx_x = 14; gfx_y = 56;
+!al_alive ? (
+  gfx_set(1, 0.55, 0.45, 1); gfx_drawstr("見張り（TUKONYA_Auto Link）が動いていません");
+) : al_ch == 0 ? (
+  gfx_set(0.7, 0.7, 0.7, 1); gfx_drawstr("Off：どこともつながっていません");
+) : (
+  al_n = gmem[al_ch];
+  al_n >= 2 ? (
+    gfx_set(0.55, 0.9, 0.6, 1); gfx_drawnumber(al_n, 0); gfx_drawstr(" 本のトラックで線をそろえています");
+  ) : (
+    gfx_set(0.9, 0.85, 0.5, 1); gfx_drawstr("同じ Ch のトラックがまだありません");
+  );
+);
+
+// checkbox rows: types with a line on any track of this Ch (from the script), plus the ones checked here
+al_ch > 0 ? (
+  al_vis = al_alive ? (floor(gmem[32 + al_ch] + 0.5) | al_mask) : al_mask;
+  al_down = mouse_cap & 1;
+  al_click = al_down && !al_prev_down;
+  al_prev_down = al_down;
+  al_y = 86; al_rows = 0; al_i = 0;
+  loop(8,
+    (al_vis & (1 << al_i)) ? (
+      al_on = al_mask & (1 << al_i);
+      // clicks only while stopped: slider_automate gives one undo point per click (P12); while playing it
+      // could be recorded as automation in latch/write mode (T29b), so clicks are ignored then
+      al_click && !(play_state & 1) && mouse_y >= al_y && mouse_y < al_y + 24 && mouse_x < 300 ? (
+        link_mask = al_mask ~ (1 << al_i);
+        al_mask = link_mask;
+        al_on = al_mask & (1 << al_i);
+        slider_automate(link_mask);
+      );
+      gfx_set(0.8, 0.8, 0.8, 1); gfx_rect(14, al_y + 3, 16, 16, 0);
+      al_on ? ( gfx_set(0.55, 0.9, 0.6, 1); gfx_rect(17, al_y + 6, 10, 10, 1); );
+      gfx_set(1, 1, 1, 1); gfx_x = 40; gfx_y = al_y + 3; gfx_drawstr(al_label(al_i));
+      al_y += 24; al_rows += 1;
+    );
+    al_i += 1;
+  );
+  al_rows == 0 ? ( gfx_set(0.7, 0.7, 0.7, 1); gfx_x = 14; gfx_y = 90; gfx_drawstr("線のある種類だけここに出ます"); )
+  : (play_state & 1) ? ( gfx_set(0.9, 0.85, 0.5, 1); gfx_x = 14; gfx_y = al_y + 6; gfx_drawstr("停止中に切り替えてください"); );
+) : ( al_prev_down = mouse_cap & 1; );

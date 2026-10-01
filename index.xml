@@ -166,6 +166,24 @@
         <link rel="website">https://github.com/tuko1573/tukonya-scripts-reapack</link>
       </metadata>
     </reapack>
+    <reapack name="TUKONYA_Auto Link.lua" type="script" desc="TUKONYA_Auto Link">
+      <version name="1.0.0" author="TUKONYA" time="2026-10-01T18:00:00Z">
+        <changelog><![CDATA[初版。同じ「Link Ch」を選んだトラック同士で、オートメーションの線（ミュート・ボリューム・パン・幅・トリムなど8種類）をそろえる。使い方: 線をそろえたいトラックに「TUKONYA Auto Link」を挿し、同じ Link Ch を選ぶ。見張りの「TUKONYA_Auto Link」を動かす（REAPER起動時に自動で動かすには「(Install Startup)」を1回実行）。再生中は写さず、止めたときに写る。音には何もしない。Mac で確認済み、Windows は未確認。]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA_Auto%20Link.lua</source>
+        <source main="main" file="TUKONYA_Auto Link (Install Startup).lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA_Auto%20Link%20(Install%20Startup).lua</source>
+        <source main="main" file="TUKONYA_Auto Link (Uninstall Startup).lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA_Auto%20Link%20(Uninstall%20Startup).lua</source>
+        <source type="effect" file="TUKONYA Auto Link.jsfx">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA%20Auto%20Link.jsfx</source>
+        <source file="lib/al_chunk.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/al_chunk.lua</source>
+        <source file="lib/al_core.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/al_core.lua</source>
+        <source file="lib/al_reaper.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/al_reaper.lua</source>
+        <source file="lib/al_startup.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/al_startup.lua</source>
+        <source file="README_AutoLink.md">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/README_AutoLink.md</source>
+      </version>
+      <metadata>
+        <description><![CDATA[{\rtf1 {\fonttbl {\f0 Helvetica;}} \f0\fs20 TUKONYA Auto Link: keeps automation envelopes in sync between tracks that share the same Link Ch. Insert the marker JSFX "TUKONYA Auto Link" on each track, pick the same Link Ch, and run the watcher script. Eight envelope types (mute, volume, pan, width, trim and the pre-FX variants), selectable by checkbox. Synced while stopped. Needs REAPER 7.79 or later. Verified on macOS; Windows not yet tested. The JSFX does not touch audio. See README_AutoLink.md in the install folder.}]]></description>
+        <link rel="website">https://github.com/tuko1573/tukonya-scripts-reapack</link>
+      </metadata>
+    </reapack>
   </category>
   <metadata>
     <description><![CDATA[{\rtf1 {\fonttbl {\f0 Helvetica;}} \f0\fs20 Tukonya Scripts: JSFX effects and ReaScripts for REAPER by tuko. Free for personal use, no warranty.}]]></description>
