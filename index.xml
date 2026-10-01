@@ -184,6 +184,22 @@
         <link rel="website">https://github.com/tuko1573/tukonya-scripts-reapack</link>
       </metadata>
     </reapack>
+    <reapack name="TUKONYA_Folder Link.lua" type="script" desc="TUKONYA Folder Link">
+      <version name="1.0.0" author="tuko" time="2026-10-02T12:00:00Z">
+        <changelog><![CDATA[初版。編集画面（TCP）とミキサーのフォルダ開閉をリンクする。Folder Link（常駐）: どちらで開閉しても、もう片方が追従する。プロジェクトを開いたときにずれていたら編集画面に合わせる。もう一度実行すると止まる。REAPER起動時に自動で動かすには「(Install Startup)」を1回実行。Folder Toggle: 選択トラックのフォルダを両方で閉じる／開く（ショートカット向け、Cmd+Zで戻る）。Mac で確認済み、Windows は未確認。]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA_Folder%20Link.lua</source>
+        <source main="main" file="TUKONYA_Folder Link (Install Startup).lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA_Folder%20Link%20(Install%20Startup).lua</source>
+        <source main="main" file="TUKONYA_Folder Link (Uninstall Startup).lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA_Folder%20Link%20(Uninstall%20Startup).lua</source>
+        <source main="main" file="TUKONYA_Folder Toggle.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA_Folder%20Toggle.lua</source>
+        <source file="lib/fl_core.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/fl_core.lua</source>
+        <source file="lib/fl_startup.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/fl_startup.lua</source>
+        <source file="README_FolderLink.md">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/README_FolderLink.md</source>
+      </version>
+      <metadata>
+        <description><![CDATA[{\rtf1 {\fonttbl {\f0 Helvetica;}} \f0\fs20 TUKONYA Folder Link: keeps folder collapse in sync between the arrange view (TCP) and the mixer, both ways. Open or close a folder on either side and the other follows; when a project opens, the mixer is aligned to the TCP. Run the watcher script (run again to stop); the (Install Startup) action starts it with REAPER. Also includes TUKONYA_Folder Toggle, which opens/closes the selected track's folder in both views at once (for a shortcut). Needs REAPER 7.79 or later. Verified on macOS; Windows not yet tested. See README_FolderLink.md in the install folder.}]]></description>
+        <link rel="website">https://github.com/tuko1573/tukonya-scripts-reapack</link>
+      </metadata>
+    </reapack>
   </category>
   <metadata>
     <description><![CDATA[{\rtf1 {\fonttbl {\f0 Helvetica;}} \f0\fs20 Tukonya Scripts: JSFX effects and ReaScripts for REAPER by tuko. Free for personal use, no warranty.}]]></description>
