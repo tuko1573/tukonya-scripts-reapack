@@ -20,7 +20,7 @@ https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/index.xm
 
 ②
 [拡張→ReaPack→Browse packages...]からFilter:に「tukonya」と検索。
-「TUKONYA_VST3 Only Master」を[右クリック→Install]、[Apply]をクリック。
+「TUKONYA VST3 Only Master」を[右クリック→Install]、[Apply]をクリック。
 
 ③
 将来の更新は[拡張→ReaPack→Synchronize packages]で行えます。
