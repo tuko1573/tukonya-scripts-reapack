@@ -1,0 +1,143 @@
+desc:TUKONYA Container Link
+//tags: utility link container
+//author: TUKONYA
+// 目印のエフェクト。音には何もしない。コンテナの中に入れて Link Ch を選ぶと、
+// 同じ Ch のコンテナ同士で、中のプラグインの並び・つまみ・バイパス・画面だけの設定・オートメーションの線を、
+// 見張りのスクリプト「TUKONYA_Container Link」がそろえる。Ch はトラックごと（そろえない）。
+// 「LINK」ボタン: このコンテナを正として、同じ Ch の全部のコンテナをまるごと同じにする（Ctrl+Z 1回で全部戻る）。
+// gmem（名前空間は旧名のまま）: [0] 見張りの合図 [1..16] Ch ごとの本数 [32] 依頼番号 [33] Ch [34] 合言葉 [35] 返事の番号
+// [36] 返事の内容 [37] 合言葉の数え上げ [39] 依頼の時刻 [40] 見張りの時計。合言葉は隠しスライダー3にも入れる。
+slider1:cl_link_ch=0<0,16,1{Off,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16}>Link Ch
+slider2:cl_status=0<0,15,1>-Status
+slider3:cl_link_req=0<0,2147483647,1>-LinkReq
+in_pin:none
+out_pin:none
+options:gmem=TUKONYA_ChainLink
+
+@init
+cl_last_hb = -1;
+cl_last_t = 0;
+cl_ch = floor(cl_link_ch + 0.5);
+cl_wait = 0;
+cl_msg = -1;
+cl_msg_until = 0;
+cl_press = 0;
+cl_prev_cap = 0;
+
+@slider
+cl_ch = floor(cl_link_ch + 0.5);
+
+@gfx 420 128
+cl_now = time_precise();
+cl_hb = gmem[0];
+cl_hb != cl_last_hb ? ( cl_last_hb = cl_hb; cl_last_t = cl_now; );
+cl_alive = cl_hb > 0 && (cl_now - cl_last_t) < 1.5;
+cl_st = floor(cl_status + 0.5);
+
+// ---- LINK button: fires on release inside the button after a press inside it
+cl_bw = 96; cl_bh = 34; cl_bx = gfx_w - cl_bw - 14; cl_by = 12;
+cl_can = cl_alive && cl_ch > 0 && !cl_wait && (cl_st == 0 || cl_st == 1 || cl_st == 7 || cl_st == 9);
+cl_in = mouse_x >= cl_bx && mouse_x < cl_bx + cl_bw && mouse_y >= cl_by && mouse_y < cl_by + cl_bh;
+cl_down = mouse_cap & 1;
+(cl_down && !(cl_prev_cap & 1)) ? ( cl_press = (cl_in && cl_can); );
+(!cl_down && (cl_prev_cap & 1)) ? (
+  (cl_press && cl_in && cl_can) ? (
+    cl_nonce = atomic_add(gmem[37], 1);    // unique per press (the random generator starts the same in every instance)
+    cl_link_req = cl_nonce;                // bare assignment: no undo point [M probe b]
+    gmem[33] = cl_ch;
+    gmem[34] = cl_nonce;
+    gmem[39] = gmem[40];                   // stamped with the main's own clock
+    cl_my_seq = atomic_add(gmem[32], 1);   // last: the main reacts to the seq
+    cl_wait = 1; cl_wait_t = cl_now; cl_msg = -1;
+  );
+  cl_press = 0;
+);
+cl_prev_cap = mouse_cap;
+
+// ---- the main's answer
+cl_wait ? (
+  gmem[35] == cl_my_seq ? (
+    cl_wait = 0; cl_msg = gmem[36]; cl_msg_until = cl_now + (cl_msg == 0 ? 2 : 4);
+  ) : gmem[35] > cl_my_seq ? (
+    cl_wait = 0; cl_msg = -1;              // a newer press (another marker) superseded this one
+  ) : (cl_now - cl_wait_t) > 2 ? (
+    cl_wait = 0; cl_msg = 100; cl_msg_until = cl_now + 4;
+  );
+);
+(cl_msg >= 0 && cl_now > cl_msg_until) ? ( cl_msg = -1; );
+
+// ---- drawing
+gfx_set(0.12, 0.12, 0.14, 1); gfx_x = 0; gfx_y = 0; gfx_rect(0, 0, gfx_w, gfx_h);
+gfx_setfont(1, "Hiragino Sans", 30);
+gfx_set(1, 1, 1, 1); gfx_x = 14; gfx_y = 10;
+cl_ch == 0 ? gfx_drawstr("Link Ch  Off") : ( gfx_drawstr("Link Ch  "); gfx_drawnumber(cl_ch, 0); );
+
+cl_can ? ( (cl_down && cl_press && cl_in) ? gfx_set(0.25, 0.55, 0.35, 1) : gfx_set(0.2, 0.42, 0.3, 1); ) : gfx_set(0.25, 0.25, 0.28, 1);
+gfx_rect(cl_bx, cl_by, cl_bw, cl_bh);
+gfx_setfont(3, "Hiragino Sans", 18);
+cl_can ? gfx_set(1, 1, 1, 1) : gfx_set(0.55, 0.55, 0.58, 1);
+gfx_x = cl_bx; gfx_y = cl_by;
+gfx_drawstr("LINK", 1 | 4, cl_bx + cl_bw, cl_by + cl_bh);
+
+gfx_setfont(2, "Hiragino Sans", 15);
+gfx_x = 14; gfx_y = 58;
+!cl_alive ? (
+  gfx_set(1, 0.55, 0.45, 1); gfx_drawstr("スクリプト停止中（TUKONYA_Container Link が動いていません）");
+) : cl_st == 3 ? (
+  gfx_set(1, 0.55, 0.45, 1); gfx_drawstr("コンテナの中に入れてください");
+) : cl_st == 2 ? (
+  gfx_set(0.9, 0.85, 0.5, 1); gfx_drawstr("同じ Ch がこのトラックに2つあります（先の1つだけ使います）");
+) : cl_st == 4 ? (
+  gfx_set(0.9, 0.85, 0.5, 1); gfx_drawstr("入れ子のコンテナは未対応です");
+) : cl_ch == 0 ? (
+  gfx_set(0.7, 0.7, 0.7, 1); gfx_drawstr("Off：どこともつながっていません");
+) : cl_st == 10 ? (
+  gfx_set(0.9, 0.85, 0.5, 1); gfx_drawstr("録音が止まったら LINK します");
+) : cl_st == 14 ? (
+  gfx_set(0.9, 0.85, 0.5, 1); gfx_drawstr("停止すると LINK します");
+) : cl_st == 11 ? (
+  gfx_set(0.55, 0.9, 0.6, 1); gfx_drawstr("LINK しました");
+) : cl_st == 12 ? (
+  gfx_set(0.9, 0.85, 0.5, 1); gfx_drawstr("同じ Ch の上のトラックを元に LINK しました");
+) : cl_st == 13 ? (
+  gfx_set(0.9, 0.85, 0.5, 1); gfx_drawstr("別のトラックの画面の設定が優先されました");
+) : cl_st == 6 ? (
+  gfx_set(0.7, 0.7, 0.7, 1); gfx_drawstr("Ch を合わせています…");
+) : cl_st == 1 ? (
+  gfx_set(0.9, 0.85, 0.5, 1); gfx_drawstr("並びが違います（つないでいません）");
+) : cl_st == 7 ? (
+  gfx_set(0.9, 0.85, 0.5, 1); gfx_drawstr("設定が違います（停止すると確認します）");
+) : cl_st == 8 ? (
+  gfx_set(0.9, 0.85, 0.5, 1); gfx_drawstr("プラグインの読み込みを待っています");
+) : cl_st == 9 ? (
+  gfx_set(0.9, 0.85, 0.5, 1); gfx_drawstr("つないでいません（同じ設定になると自動でつながります）");
+) : (
+  cl_n = gmem[cl_ch];
+  cl_n >= 2 ? (
+    gfx_set(0.55, 0.9, 0.6, 1); gfx_drawnumber(cl_n, 0); gfx_drawstr(" 本のトラックでそろえています");
+  ) : (
+    gfx_set(0.9, 0.85, 0.5, 1); gfx_drawstr("同じ Ch のコンテナがまだありません");
+  );
+);
+
+// LINK feedback line
+gfx_x = 14; gfx_y = 90;
+cl_wait ? (
+  gfx_set(0.7, 0.7, 0.7, 1); gfx_drawstr("LINK 中…");
+) : cl_msg == 0 ? (
+  gfx_set(0.55, 0.9, 0.6, 1); gfx_drawstr("LINK しました");
+) : cl_msg == 1 ? (
+  gfx_set(0.9, 0.85, 0.5, 1); gfx_drawstr("録音が止まったら LINK します");
+) : cl_msg == 7 ? (
+  gfx_set(0.9, 0.85, 0.5, 1); gfx_drawstr("停止すると LINK します");
+) : cl_msg == 2 ? (
+  gfx_set(0.9, 0.85, 0.5, 1); gfx_drawstr("同じ Ch のコンテナがほかにありません");
+) : cl_msg == 3 ? (
+  gfx_set(0.9, 0.85, 0.5, 1); gfx_drawstr("このコンテナはつながっていないので LINK できません");
+) : cl_msg == 4 ? (
+  gfx_set(1, 0.55, 0.45, 1); gfx_drawstr("LINK できませんでした");
+) : cl_msg == 5 ? (
+  gfx_set(0.9, 0.85, 0.5, 1); gfx_drawstr("時間切れで LINK しませんでした。もう一度どうぞ");
+) : cl_msg == 100 ? (
+  gfx_set(1, 0.55, 0.45, 1); gfx_drawstr("応答がありません（見張りを動かし直してください）");
+);
