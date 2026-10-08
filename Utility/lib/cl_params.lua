@@ -474,6 +474,25 @@ function M.diff(st, io, g, a, b)
   return n, first
 end
 
+--- the differing synced values/bypass between a and b, for the log (at most `max`): { {k, p, va, vb}, ... }
+function M.diff_detail(st, io, g, a, b, max)
+  local out = {}
+  for _, k in ipairs(g.order) do
+    local S = g.slots[k]
+    if not ((S.rd[a] and S.rd[a].out) or (S.rd[b] and S.rd[b].out)) then
+      for _, p in ipairs(S.meta.list) do
+        if synced(S, p) then
+          local va, vb = io.get(a, k, p), io.get(b, k, p)
+          if abs(va - vb) > tol_c(S, p) and #out < max then out[#out + 1] = { k = k, p = p, va = va, vb = vb } end
+        end
+      end
+      local ea, eb = io.enabled(a, k), io.enabled(b, k)
+      if ea ~= eb and #out < max then out[#out + 1] = { k = k, p = "bypass", va = ea and 1 or 0, vb = eb and 1 or 0 } end
+    end
+  end
+  return out
+end
+
 --- number of differing synced values/bypass of one slot between members a and b (cross tolerance)
 function M.slot_diff(st, io, S, a, b)
   local n = 0

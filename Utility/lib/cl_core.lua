@@ -184,6 +184,22 @@ local function link(st, io, g, m)
   log(io, ("Ch %d: %s linked"):format(g.ch, m))
 end
 
+--- persistent record of why two members were found different (blob_log.txt): which plugin / param, both values
+local function log_diff(st, io, ps, g, a, b, why)
+  if not io.blog then return end
+  local ok, err = pcall(function()
+  local d = P.diff_detail(st, io, g, a, b, 12)
+  local parts = {}
+  for _, e in ipairs(d) do
+    local name = io.pdesc and io.pdesc(a, e.k, e.p) or (tostring(e.k) .. ":" .. tostring(e.p))
+    parts[#parts + 1] = ("%s = %.6f / %.6f"):format(name, e.va, e.vb)
+  end
+  local function tn(m) local r = ps.info[m]; return r and ("%s(#%s)"):format(r.tname or "?", tostring(r.tindex)) or m end
+  io.blog(("diff | Ch %d | %s | %s vs %s | %d: %s"):format(g.ch, why, tn(a), tn(b), #d, table.concat(parts, "; ")))
+  end)
+  if not ok then log(io, "diff log failed: " .. tostring(err)) end
+end
+
 local function first_linked(g, except)
   for _, m in ipairs(g.members) do if g.linked[m] and m ~= except then return m end end
 end
@@ -324,7 +340,9 @@ local function run_job(st, io, ps, job, ctx)
     st.stats.dialogs = st.stats.dialogs + 1
     g.asking[j] = nil
     if a == "yes" then
-      if in_block(st, io, ps, desc, g.ch, { j }, function() align_all(st, io, g, ref, j, ctx) end) then link(st, io, g, j)
+      if in_block(st, io, ps, desc, g.ch, { j }, function() align_all(st, io, g, ref, j, ctx) end) then
+        if P.diff(st, io, g, ref, j) > 0 then log_diff(st, io, ps, g, ref, j, "still different right after aligning (join)") end
+        link(st, io, g, j)
       else ps.declined[j .. "|" .. g.ch] = true end
     elseif a == "no" then
       if in_block(st, io, ps, desc, g.ch, { j }, function()
@@ -353,7 +371,10 @@ local function run_job(st, io, ps, job, ctx)
     for _, m in ipairs(list) do g.asking[m] = nil end
     if a == "yes" then
       if in_block(st, io, ps, desc, g.ch, list, function() for _, m in ipairs(list) do align_all(st, io, g, ref, m, ctx) end end) then
-        for _, m in ipairs(list) do link(st, io, g, m) end
+        for _, m in ipairs(list) do
+          if P.diff(st, io, g, ref, m) > 0 then log_diff(st, io, ps, g, ref, m, "still different right after aligning (form)") end
+          link(st, io, g, m)
+        end
       else for _, m in ipairs(list) do ps.declined[m .. "|" .. g.ch] = true end end
     else
       for _, m in ipairs(list) do ps.declined[m .. "|" .. g.ch] = true end
@@ -603,6 +624,7 @@ local function process_group(st, io, ps, g, ctx, settling)
           g.asking[j] = true
           ps.jobs[#ps.jobs + 1] = { kind = "join", ch = g.ch, mid = j }
           log(io, ("Ch %d: %s has %d differing values (first %s), ask when stopped"):format(g.ch, j, nd, tostring(first)))
+          log_diff(st, io, ps, g, ref, j, "join")
         end
       end
     end
@@ -626,7 +648,8 @@ local function process_group(st, io, ps, g, ctx, settling)
         local rest = {}
         for _, a in ipairs(joiners) do
           if a ~= best then
-            if eq[best][a] then link(st, io, g, a) else g.asking[a] = true; rest[#rest + 1] = a end
+            if eq[best][a] then link(st, io, g, a)
+            else g.asking[a] = true; rest[#rest + 1] = a; log_diff(st, io, ps, g, best, a, "at formation") end
           end
         end
         if #rest > 0 then ps.jobs[#ps.jobs + 1] = { kind = "form", ch = g.ch, ref = best, list = rest } end
@@ -1155,6 +1178,128 @@ local function link_step(st, io, ps, ctx, rr)
 end
 M.link_sources = link_sources
 
+-- ------------------------------------------------------------------ Ch picker data + rename (HANDOVER 2026-10-08)
+--- what the markers' Ch list shows: per Ch the number of TRACKS whose marker is set to it (every marker, whatever its
+--- state: "taken" for the free-Ch choice must also hold during the debounce), the group's container name, the lowest free Ch
+local function ch_info(io, ps, recs)
+  local uses, seen, names = {}, {}, {}
+  for _, r in ipairs(recs or {}) do
+    local ch = r.ch or 0
+    if ch >= 1 and ch <= 16 then
+      local k = tostring(r.tguid) .. "#" .. ch
+      if not seen[k] then seen[k] = true; uses[ch] = (uses[ch] or 0) + 1 end
+    end
+  end
+  for ch = 1, 16 do
+    if uses[ch] then
+      local g = ps.groups[ch]
+      local nm = g and (g.name_target ~= nil and g.name_target or g.name) or nil
+      if nm == nil and g and io.cname then
+        for _, m in ipairs(g.members) do local x = io.cname(m); if x ~= nil then nm = x; break end end
+      end
+      names[ch] = nm or ""
+    end
+  end
+  return { uses = uses, names = names, free = L.free_ch(uses) }
+end
+M.ch_info = ch_info
+
+--- rename requests from a marker (gmem): expired ones are dropped (MUST 6); the others wait for the end of the tick
+local function rename_collect(st, io, ps, ctx)
+  if not io.rename_requests then return end
+  for _, req in ipairs(io.rename_requests()) do
+    if L.expired(req, ctx.now, st.cfg.link_max_age) then
+      ev(io, ("rename request expired (Ch %d, age %.1f s): not executed"):format(req.ch or 0, ctx.now - (tonumber(req.t) or 0)))
+      if io.rename_ack then io.rename_ack(req, L.RN.EXPIRED) end
+    elseif not ps.groups[req.ch or 0] then
+      ev(io, ("rename request for Ch %d: no container on that Ch"):format(req.ch or 0))
+      if io.rename_ack then io.rename_ack(req, L.RN.FAILED) end
+    else
+      ps.renames = ps.renames or {}
+      ps.renames[#ps.renames + 1] = req
+    end
+  end
+end
+
+--- a Ch was picked in a marker's list: the slider is already set (and the host told), but that alone makes no undo entry
+--- (MBP 2026-10-08), so the next unrelated entry would swallow it and its Ctrl+Z would silently bring the old Ch back.
+--- One empty named undo block captures the state with the new Ch (an empty EndBlock still makes an entry).
+local function pick_collect(st, io, ps, ctx)
+  if not io.pick_requests then return end
+  for _, req in ipairs(io.pick_requests()) do
+    if L.expired(req, ctx.now, st.cfg.link_max_age) then
+      ev(io, ("Ch pick notice expired (Ch %d, age %.1f s): no undo entry"):format(req.ch or 0, ctx.now - (tonumber(req.t) or 0)))
+    elseif (req.ch or -1) < 0 or req.ch > 16 then
+      ev(io, "Ch pick notice with a bad Ch: ignored")
+    else
+      io.begin_block()
+      io.end_block(L.pick_desc(req.ch))
+      st.stats.picks = (st.stats.picks or 0) + 1
+      log(io, ("Ch pick: %s → one undo entry"):format(L.pick_desc(req.ch)))
+    end
+  end
+end
+
+--- one rename: the input window (modal), then every container of the Ch gets the name inside ONE named undo block
+local function rename_run(st, io, ps, ctx, req)
+  local ack = function(code) if io.rename_ack then io.rename_ack(req, code) end end
+  local g = ps.groups[req.ch]
+  if not g or #g.members == 0 or not io.ask_name then ack(L.RN.FAILED); return end
+  local cur = g.name_target ~= nil and g.name_target or g.name
+  if cur == nil or g.name_split then
+    cur = nil
+    for _, m in ipairs(g.members) do local x = io.cname(m); if x ~= nil and x ~= "" then cur = x; break end end
+  end
+  if io.rename_busy then io.rename_busy(true) end
+  local okq, ans = pcall(io.ask_name, req.ch, cur or "")
+  if io.rename_busy then io.rename_busy(false) end
+  if not okq then error(ans, 0) end
+  st.stats.rename_dialogs = (st.stats.rename_dialogs or 0) + 1
+  ps.last_now = io.now()                      -- the dialog blocked the loop: the next tick's dt starts from here
+  if ans == nil then ack(L.RN.CANCELLED); return end
+  local new = tostring(ans):gsub("[\0-\31\127]", " "):gsub("^%s+", ""):gsub("%s+$", "")
+  -- the dialog was modal, but addresses are re-read (a chunk write in this tick moved them) before anything is written
+  rescan(io, ps, ctx)
+  g = ps.groups[req.ch]
+  if not g or #g.members == 0 then ack(L.RN.FAILED); return end
+  local todo = {}
+  for _, m in ipairs(g.members) do
+    local s = io.cname(m)
+    if s ~= nil and s ~= new then todo[#todo + 1] = m end
+  end
+  if #todo == 0 then ack(L.RN.UNCHANGED); return end
+  -- the entry we are on keeps the OLD name as its record (else the name step would record the new name onto it and one
+  -- Ctrl+Z would restore the new name)
+  local h = ps.hist[ctx.cur]
+  if h then
+    h.names = h.names or {}
+    if h.names[req.ch] == nil and g.name ~= nil and g.name_target == nil and not g.name_split then h.names[req.ch] = g.name end
+  end
+  local desc = ("Container Link: Ch %d の名前を変更"):format(req.ch)
+  local okw, bad = true, {}
+  io.begin_block()
+  local okp, err = pcall(function()
+    for _, m in ipairs(todo) do
+      local rb = io.set_cname(m, new)
+      st.stats.name_writes = (st.stats.name_writes or 0) + 1
+      if rb ~= new then okw = false; bad[#bad + 1] = m end
+    end
+  end)
+  io.end_block(desc)
+  if not okp then ev(io, ("%s: aborted inside the undo block: %s"):format(desc, tostring(err))); ack(L.RN.FAILED); return end
+  -- bookkeeping: the members now agree on `new`; the next tick sees the block's entry and records the name on it
+  g.name, g.name_target, g.name_split, g.name_refresh = new, nil, nil, nil
+  for _, m in ipairs(g.members) do
+    if g.linked[m] then g.nbase[m] = new; g.nbad[m] = nil end
+  end
+  for _, m in ipairs(bad) do g.nbad[m] = io.cname(m); g.nbase[m] = io.cname(m) end
+  st.stats.renames = (st.stats.renames or 0) + 1
+  ev(io, ("Ch %d: 名前を「%s」にしました（%d 本中 %d 本を書き換え）%s"):format(req.ch, new == "" and "(名前なし)" or new, #g.members, #todo - #bad,
+    okw and "" or ("、書けなかったもの " .. #bad .. " 本")))
+  ack(okw and L.RN.DONE or L.RN.FAILED)
+end
+M.rename_run = rename_run
+
 -- ------------------------------------------------------------------ tick
 local function prof(st, name, t0, t1)
   local p = st.prof[name]
@@ -1406,6 +1551,8 @@ function M.tick(st, io)
     link_step(st, io, ps, ctx, rr)
     recs = rr.recs
   end
+  rename_collect(st, io, ps, ctx)
+  pick_collect(st, io, ps, ctx)
 
   tp = prof(st, "resolve", tp, clock())
   -- 4. groups
@@ -1439,6 +1586,7 @@ function M.tick(st, io)
     counts[ch] = n
   end
   io.publish(counts)
+  if io.publish_ch then io.publish_ch(ch_info(io, ps, recs)) end
   if ctx.mouse and ctx.mouse.press and ctx.any_watched and not ctx.hit_any and not st.nomatch_logged then
     st.nomatch_logged = true
     if io.blog then io.blog("fallback | a press over a watched window never matched its window: watch end only (logged once per session)") end
@@ -1514,9 +1662,16 @@ function M.tick(st, io)
   tp = prof(st, "status", tp, clock())
 
   -- 7. dialogs: only when stopped, one per tick
+  local ran_dialog = false
   if not playing and #ps.jobs > 0 then
     local job = table.remove(ps.jobs, 1)
     run_job(st, io, ps, job, ctx)
+    ran_dialog = true
+  end
+  -- the rename window (user-initiated from a marker): one modal per tick, after the join dialogs; allowed while playing
+  if not ran_dialog and ps.renames and #ps.renames > 0 then
+    local req = table.remove(ps.renames, 1)
+    rename_run(st, io, ps, ctx, req)
   end
   return ps
 end
