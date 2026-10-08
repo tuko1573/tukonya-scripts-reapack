@@ -47,6 +47,9 @@ function M.new(R)
   local lstate = {}
   if R.gmem_read then
     L.gmem_init(lstate, R.gmem_read)
+    L.rn_init(lstate, R.gmem_read)               -- the rename channel: a request left from an earlier run is never executed
+    L.pk_init(lstate, R.gmem_read)               -- … and the Ch-pick notice
+    if R.gmem_write then R.gmem_write(L.G2.RN_BUSY, 0) end
     -- 1000 × (100..9999): ≥ 100000 (never 0/1 = a v1 marker's bypass at index 2) and < 2^24, so the nonce stays exact
     -- even if gmem or a slider were single precision [U]
     if R.gmem_write then R.gmem_write(L.G.CTR, 1000 * math.random(L.NONCE_BASE // 1000, 9999)) end
@@ -247,6 +250,20 @@ function M.new(R)
     local tr, a = at(mid, k)
     if p < 0 then p = R.TrackFX_GetNumParams(tr, a) + p end
     return R.TrackFX_GetParamNormalized(tr, a, p)
+  end
+
+  --- "plugin / param [lane]" for the log (diff records only, never on the hot path)
+  function io.pdesc(mid, k, p)
+    local tr, a = at(mid, k)
+    if not tr or not a then return tostring(k) .. ":" .. tostring(p) end
+    local _, fx = R.TrackFX_GetFXName(tr, a)
+    if p == "bypass" then return ("%s / bypass"):format(fx or "?") end
+    local q = p < 0 and (R.TrackFX_GetNumParams(tr, a) + p) or p
+    local _, pn = R.TrackFX_GetParamName(tr, a, q)
+    local lane = ""
+    local ok, ed = pcall(io.env_driven, mid)
+    if ok and ed[k] and ed[k][p] then lane = " [lane]" end
+    return ("%s / p%d %s%s"):format(fx or "?", q, pn or "?", lane)
   end
 
   function io.set(mid, k, p, v)
@@ -657,6 +674,65 @@ function M.new(R)
       local n = counts[ch] or 0
       if last_counts[ch] ~= n then R.gmem_write(ch, n); last_counts[ch] = n end
     end
+  end
+
+  -- ---------------------------------------------------------------- Ch picker region (cl_link L.G2)
+  local pub_sig, pub_ver, pub_names = nil, nil, {}
+  --- per-Ch track counts, free Ch and names for the markers' Ch list. Writes only what changed; the change counter last.
+  function io.publish_ch(info)
+    if not R.gmem_write or not R.gmem_read then return end
+    local G = L.G2
+    local parts = { tostring(info.free) }
+    for ch = 1, 16 do parts[#parts + 1] = (info.uses[ch] or 0) .. "\1" .. (info.names[ch] or "") end
+    local sig = table.concat(parts, "\2")
+    if sig == pub_sig then return end
+    if pub_ver == nil then pub_ver = math.floor(R.gmem_read(G.VER) or 0) end
+    for ch = 1, 16 do
+      R.gmem_write(G.USE + ch, info.uses[ch] or 0)
+      local nm = L.name_bytes(info.names[ch] or "")
+      if pub_names[ch] ~= nm then
+        pub_names[ch] = nm
+        R.gmem_write(G.NLEN + ch, #nm)
+        for i = 1, #nm do R.gmem_write(G.NAME + (ch - 1) * G.STRIDE + i - 1, nm:byte(i)) end
+      end
+    end
+    R.gmem_write(G.FREE, info.free)
+    pub_ver = (pub_ver % 1000000) + 1
+    R.gmem_write(G.VER, pub_ver)                   -- last: the JSFX reads the counter before and after copying
+    pub_sig = sig
+  end
+
+  --- rename requests from a marker's "名前を変える…" (gmem only). Same MUST 6 treatment as LINK.
+  function io.rename_requests()
+    local out = {}
+    if R.gmem_read then
+      local q = L.rn_poll(lstate, R.gmem_read)
+      if q then out[#out + 1] = q end
+    end
+    return out
+  end
+  --- a Ch was picked in a marker's list since the last tick (the slider is already set): { ch, t } or none
+  function io.pick_requests()
+    local out = {}
+    if R.gmem_read then
+      local q = L.pk_poll(lstate, R.gmem_read)
+      if q then out[#out + 1] = q end
+    end
+    return out
+  end
+  function io.rename_ack(req, code)
+    if R.gmem_write then R.gmem_write(L.G2.RN_ACK_CODE, code); R.gmem_write(L.G2.RN_ACK_SEQ, req.seq) end
+  end
+
+  --- 1 while the input window is open: the markers keep showing 「動作中」 although the loop is blocked
+  function io.rename_busy(on) if R.gmem_write then R.gmem_write(L.G2.RN_BUSY, on and 1 or 0) end end
+
+  --- the input window for a Ch name (modal: the defer loop stops until it closes). Returns the text, or nil = cancelled.
+  --- "separator=\n" makes a newline the field separator, so commas in a name stay part of the one field.
+  function io.ask_name(ch, default)
+    local ok, ret = R.GetUserInputs(("Container Link: Ch %d の名前"):format(ch), 1, "名前（空欄で名前を消す）,separator=\n,extrawidth=240", default or "")
+    if not ok then return nil end
+    return ret
   end
 
   --- heartbeat off: the marker then shows 「スクリプト停止中」

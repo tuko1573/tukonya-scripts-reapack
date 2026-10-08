@@ -214,6 +214,26 @@
       </metadata>
     </reapack>
     <reapack name="TUKONYA_Container Link.lua" type="script" desc="TUKONYA Container Link">
+      <version name="1.1.0" author="tuko" time="2026-10-08T12:41:30Z">
+        <changelog><![CDATA[目印の見出し「Link Ch …」を押すと Ch の一覧が開くようにした。使っている Ch には名前と本数が出て、今の Ch にチェックが付く。一覧の「空いている Ch を使う」で使っていない番号へ移れる。見出しの右クリックか一覧の「この Ch の名前を変える…」で REAPER の入力窓が開き、同じ Ch のコンテナを全部その名前にできる（日本語可、Cmd+Z 1回で全部戻る）。一覧で Ch を変えるたびに取り消しの記録が1つできる。従来の Link Ch のつまみは画面から隠したが、保存済みのプロジェクトの Ch はそのまま。調査用の記録（blob_log.txt に「diff |」行）を追加、動きは変えない。]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA_Container%20Link.lua</source>
+        <source main="main" file="TUKONYA_Container Link (Install Startup).lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA_Container%20Link%20%28Install%20Startup%29.lua</source>
+        <source main="main" file="TUKONYA_Container Link (Uninstall Startup).lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA_Container%20Link%20%28Uninstall%20Startup%29.lua</source>
+        <source main="main" file="TUKONYA_Container Link - LINK (selected track).lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA_Container%20Link%20-%20LINK%20%28selected%20track%29.lua</source>
+        <source type="effect" file="TUKONYA Container Link.jsfx">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA%20Container%20Link.jsfx</source>
+        <source file="lib/cl_backup.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/cl_backup.lua</source>
+        <source file="lib/cl_blob.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/cl_blob.lua</source>
+        <source file="lib/cl_blobclass.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/cl_blobclass.lua</source>
+        <source file="lib/cl_core.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/cl_core.lua</source>
+        <source file="lib/cl_env.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/cl_env.lua</source>
+        <source file="lib/cl_hist.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/cl_hist.lua</source>
+        <source file="lib/cl_link.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/cl_link.lua</source>
+        <source file="lib/cl_params.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/cl_params.lua</source>
+        <source file="lib/cl_reaper.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/cl_reaper.lua</source>
+        <source file="lib/cl_startup.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/cl_startup.lua</source>
+        <source file="lib/cl_struct.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/cl_struct.lua</source>
+        <source file="README_ContainerLink.md">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/README_ContainerLink.md</source>
+      </version>
       <version name="1.0.0" author="tuko" time="2026-10-05T15:08:04Z">
         <changelog><![CDATA[初版。コンテナに目印の「TUKONYA Container Link」を入れて同じ Link Ch を選ぶと、同じ Ch のコンテナ同士で、中のプラグインの並び・つまみ・バイパス・画面だけの設定・オートメーションの線・コンテナの名前がそろう。どのトラックで触っても全員へ（Leader なし）。Cmd+Z／Cmd+Shift+Z 1回で全員そろって戻る・進む。LINK（目印の画面のボタン、またはアクション「LINK (selected track)」）で、選んだトラックのコンテナを正として全員を同じにする。見張りの「TUKONYA_Container Link」を動かす（REAPER起動時に自動で動かすには「(Install Startup)」を1回実行）。REAPER 7.79 以降。js_ReaScriptAPI が必要（ReaPack の ReaTeam Extensions から入る。画面だけの設定をマウスを離した直後に写すため）。目印は音に何もしない。Mac で確認済み、Windows は未確認。]]></changelog>
         <source main="main">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA_Container%20Link.lua</source>

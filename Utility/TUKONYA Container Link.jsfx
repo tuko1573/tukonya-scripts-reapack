@@ -7,7 +7,14 @@ desc:TUKONYA Container Link
 // 「LINK」ボタン: このコンテナを正として、同じ Ch の全部のコンテナをまるごと同じにする（Ctrl+Z 1回で全部戻る）。
 // gmem（名前空間は旧名のまま）: [0] 見張りの合図 [1..16] Ch ごとの本数 [32] 依頼番号 [33] Ch [34] 合言葉 [35] 返事の番号
 // [36] 返事の内容 [37] 合言葉の数え上げ [39] 依頼の時刻 [40] 見張りの時計。合言葉は隠しスライダー3にも入れる。
-slider1:cl_link_ch=0<0,16,1{Off,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16}>Link Ch
+// Ch の一覧用（2026-10-08、[0..40] とは別の場所）: [1000] 変更カウンター（見張りが最後に書く） [1001..1016] Ch ごとの
+// マーカーのあるトラック数 [1017] 空いている一番小さい Ch（0=無し） [1020..1035] 名前のバイト数
+// [1100 + (Ch-1)*128 + i] 名前の i バイト目（UTF-8、最大120バイト） [1040] 名前変更の依頼番号 [1041] Ch [1042] 依頼の時刻
+// [1043] 返事の番号 [1044] 返事の内容 [1045] 1=名前の入力窓が開いている間（見張りは止まって見えるが動いている）
+// [1046] 一覧で選んだ Ch [1047] その時刻 [1048] 通し番号（見張りが「元に戻せる保存」を1つ作る）。
+// Link Ch の標準の選択欄は隠してある（"-" 始まり。番号・範囲・並びは今までどおりなので保存済みプロジェクトもオートメーションもそのまま）。
+// 画面の見出し「Link Ch N」をクリックすると自前の一覧が開く。
+slider1:cl_link_ch=0<0,16,1{Off,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16}>-Link Ch
 slider2:cl_status=0<0,15,1>-Status
 slider3:cl_link_req=0<0,2147483647,1>-LinkReq
 in_pin:none
@@ -23,6 +30,140 @@ cl_msg = -1;
 cl_msg_until = 0;
 cl_press = 0;
 cl_prev_cap = 0;
+cl_names_ver = -1;            // gmem[1000] as last copied
+cl_free = 0;
+cl_hpress = 0;                // a press that started on the heading
+cl_hprev = 0;
+cl_hk_ver = -1; cl_hk_ch = -1; cl_hk_w = -1; cl_hk_alive = -1;   // heading fit cache key
+cl_head_ok = 0;
+
+// string slots: 200+ch = name of Ch (raw UTF-8), 300 = menu text, 301 = scratch, 302 = heading name (fitted), 305 = scratch
+
+// copy the names from gmem into the string slots; retry when the change counter moved while copying
+function cl_load_names()
+  local(try, v1, ch, n, i, c, s)
+(
+  try = 0; v1 = -1;
+  while (try < 3 && v1 != gmem[1000]) (
+    v1 = gmem[1000];
+    ch = 1;
+    loop(16,
+      s = 200 + ch;
+      n = max(0, min(gmem[1019 + ch], 120));
+      strcpy(s, "");
+      i = 0;
+      loop(n,
+        c = gmem[1100 + (ch - 1) * 128 + i];
+        str_setchar(s, strlen(s), c, 'cu');
+        i += 1;
+      );
+      ch += 1;
+    );
+    try += 1;
+  );
+  cl_names_ver = v1;
+);
+
+// append the name in string slot nm to string slot dst for a menu: "|" would split the item → full-width "｜", control chars → space
+function cl_menu_append_name(dst, nm)
+  local(i, n, c)
+(
+  i = 0; n = strlen(nm);
+  loop(n,
+    c = str_getchar(nm, i, 'cu');
+    c == 124 ? (
+      str_setchar(dst, strlen(dst), 239, 'cu'); str_setchar(dst, strlen(dst), 189, 'cu'); str_setchar(dst, strlen(dst), 156, 'cu');
+    ) : (
+      str_setchar(dst, strlen(dst), c < 32 ? 32 : c, 'cu');
+    );
+    i += 1;
+  );
+);
+
+// the list: Off | 1..16 (name, tracks in use) | free Ch | rename. Only numbers while the watcher is not alive.
+function cl_build_menu()
+  local(ch, n)
+(
+  cl_load_names();
+  cl_free = gmem[1017];
+  strcpy(300, cl_ch == 0 ? "!Off" : "Off");
+  strcat(300, "||");
+  ch = 1;
+  loop(16,
+    cl_ch == ch ? strcat(300, "!");
+    sprintf(301, "%d", ch); strcat(300, 301);
+    n = gmem[1000 + ch];
+    (cl_alive && n > 0) ? (
+      strcat(300, "   ");
+      strlen(200 + ch) > 0 ? cl_menu_append_name(300, 200 + ch) : strcat(300, "（名前なし）");
+      sprintf(301, "   %d本", n); strcat(300, 301);
+    );
+    strcat(300, "|");
+    ch += 1;
+  );
+  strcat(300, "|");
+  !cl_alive ? strcat(300, "#空いている Ch を使う") : (
+    cl_free > 0 ? ( sprintf(301, "空いている Ch を使う（→ %d）", cl_free); strcat(300, 301); ) : strcat(300, "#空いている Ch がありません");
+  );
+  strcat(300, "|");
+  (cl_alive && cl_ch > 0) ? strcat(300, "この Ch の名前を変える…") : strcat(300, "#この Ch の名前を変える…");
+);
+
+// choose a Ch as the (now hidden) dropdown did: set the slider, tell the editor and the host (automation / touch). That alone
+// makes no undo entry (measured), so the main script is told too and makes one named entry (a later Ctrl+Z of something
+// else would otherwise silently take the Ch back). Same request protocol as LINK: stamp = the main's clock, seq written last.
+function cl_set_ch(n)
+(
+  n != cl_ch ? (
+    cl_link_ch = n; cl_ch = n;
+    sliderchange(1);
+    slider_automate(1);
+    gmem[1046] = n;
+    gmem[1047] = gmem[40];
+    atomic_add(gmem[1048], 1);
+  );
+);
+
+// ask the main script for the name window (same request protocol as LINK: stamp = main clock, seq written last)
+function cl_request_rename()
+(
+  !cl_busy ? (
+    gmem[1041] = cl_ch;
+    gmem[1042] = gmem[40];
+    atomic_add(gmem[1040], 1);
+  );
+);
+
+// the index gfx_showmenu returned → what to do
+function cl_menu_do(idx)
+(
+  // gfx_showmenu numbers the non-empty fields 1, 2, 3 … (separators get no number, grayed items do; WDL eel_lice.h
+  // PopulateMenuFromStr): 1 = Off, 2..17 = Ch 1..16, 18 = free Ch, 19 = rename
+  idx == 1 ? cl_set_ch(0);
+  (idx >= 2 && idx <= 17) ? cl_set_ch(idx - 1);
+  (idx == 18 && cl_alive && cl_free > 0) ? cl_set_ch(cl_free);
+  (idx == 19 && cl_alive && cl_ch > 0) ? cl_request_rename();
+);
+
+// fit string slot src into width maxw (current font) as slot dst, cutting whole UTF-8 characters and adding "…"
+function cl_fit_name(src, dst, maxw)
+  local(w, h, n, found)
+(
+  strcpy(dst, src);
+  gfx_measurestr(dst, w, h);
+  w > maxw ? (
+    found = 0;
+    while (!found && strlen(dst) > 0) (
+      n = strlen(dst) - 1;
+      while (n > 0 && (str_getchar(dst, n, 'cu') & 192) == 128) ( n -= 1; );
+      str_setlen(dst, n);
+      strcpy(305, dst); strcat(305, "…");
+      gfx_measurestr(305, w, h);
+      w <= maxw ? found = 1;
+    );
+    strcpy(dst, 305);
+  );
+);
 
 @slider
 cl_ch = floor(cl_link_ch + 0.5);
@@ -31,12 +172,13 @@ cl_ch = floor(cl_link_ch + 0.5);
 cl_now = time_precise();
 cl_hb = gmem[0];
 cl_hb != cl_last_hb ? ( cl_last_hb = cl_hb; cl_last_t = cl_now; );
-cl_alive = cl_hb > 0 && (cl_now - cl_last_t) < 1.5;
+cl_busy = cl_hb > 0 && gmem[1045] != 0;          // the main's name window is open: its loop is blocked, not dead
+cl_alive = cl_hb > 0 && ((cl_now - cl_last_t) < 1.5 || cl_busy);
 cl_st = floor(cl_status + 0.5);
 
 // ---- LINK button: fires on release inside the button after a press inside it
 cl_bw = 96; cl_bh = 34; cl_bx = gfx_w - cl_bw - 14; cl_by = 12;
-cl_can = cl_alive && cl_ch > 0 && !cl_wait && (cl_st == 0 || cl_st == 1 || cl_st == 7 || cl_st == 9);
+cl_can = cl_alive && !cl_busy && cl_ch > 0 && !cl_wait && (cl_st == 0 || cl_st == 1 || cl_st == 7 || cl_st == 9);
 cl_in = mouse_x >= cl_bx && mouse_x < cl_bx + cl_bw && mouse_y >= cl_by && mouse_y < cl_by + cl_bh;
 cl_down = mouse_cap & 1;
 (cl_down && !(cl_prev_cap & 1)) ? ( cl_press = (cl_in && cl_can); );
@@ -54,6 +196,23 @@ cl_down = mouse_cap & 1;
 );
 cl_prev_cap = mouse_cap;
 
+// ---- heading: press = the Ch list, opened at once like a REAPER dropdown; right press = rename
+//      (REAPER passes right clicks to @gfx: Cockos' own General Dynamics uses mouse_cap&2)
+cl_hx = 8; cl_hy = 6; cl_hw = cl_bx - 14 - cl_hx; cl_hh = 44;
+cl_hin = mouse_x >= cl_hx && mouse_x < cl_hx + cl_hw && mouse_y >= cl_hy && mouse_y < cl_hy + cl_hh;
+cl_rdown = (mouse_cap & 2) && !(cl_hprev & 2) && cl_hin;
+(cl_rdown && cl_alive && cl_ch > 0) ? (
+  cl_request_rename();   // nothing modal here: the main opens the window
+  cl_hprev = mouse_cap;
+) : ((cl_down && !(cl_hprev & 1) && cl_hin) || cl_rdown) ? (   // right press with no rename possible: show the list (it says why)
+  cl_build_menu();
+  gfx_x = 14; gfx_y = 52;   // below the heading (6..50): the list must not appear under a held button
+  cl_menu_do(gfx_showmenu(300));
+  cl_hpress = 0; cl_press = 0; cl_prev_cap = mouse_cap; cl_hprev = mouse_cap;   // the menu swallowed the button edges
+) : (
+  cl_hprev = mouse_cap;
+);
+
 // ---- the main's answer
 cl_wait ? (
   gmem[35] == cl_my_seq ? (
@@ -69,8 +228,25 @@ cl_wait ? (
 // ---- drawing
 gfx_set(0.12, 0.12, 0.14, 1); gfx_x = 0; gfx_y = 0; gfx_rect(0, 0, gfx_w, gfx_h);
 gfx_setfont(1, "Hiragino Sans", 30);
-gfx_set(1, 1, 1, 1); gfx_x = 14; gfx_y = 10;
-cl_ch == 0 ? gfx_drawstr("Link Ch  Off") : ( gfx_drawstr("Link Ch  "); gfx_drawnumber(cl_ch, 0); );
+// names: copy when the counter moved; the heading's name is fitted next to "Link Ch N" (cached)
+gmem[1000] != cl_names_ver ? cl_load_names();
+(cl_hk_ver != cl_names_ver || cl_hk_ch != cl_ch || cl_hk_w != gfx_w || cl_hk_alive != cl_alive) ? (
+  cl_hk_ver = cl_names_ver; cl_hk_ch = cl_ch; cl_hk_w = gfx_w; cl_hk_alive = cl_alive;
+  strcpy(302, "");
+  (cl_ch > 0 && cl_alive && strlen(200 + cl_ch) > 0) ? (
+    sprintf(301, "Link Ch %d　", cl_ch);
+    gfx_measurestr(301, cl_pw, cl_ph);
+    cl_fit_name(200 + cl_ch, 302, cl_hw - 30 - cl_pw);
+  );
+);
+(cl_hin && !cl_down) ? gfx_set(0.85, 0.92, 1, 1) : gfx_set(1, 1, 1, 1);
+gfx_x = 14; gfx_y = 10;
+cl_ch == 0 ? gfx_drawstr("Link Ch  Off") : ( gfx_drawstr("Link Ch "); gfx_drawnumber(cl_ch, 0); );
+strlen(302) > 0 ? ( gfx_drawstr("　"); gfx_set(0.75, 0.85, 1, 1); gfx_drawstr(302); );
+// a small triangle: this heading opens a list
+cl_tx = gfx_x + 10; cl_ty = 26;
+cl_hin ? gfx_set(0.85, 0.92, 1, 1) : gfx_set(0.6, 0.6, 0.65, 1);
+gfx_triangle(cl_tx, cl_ty, cl_tx + 12, cl_ty, cl_tx + 6, cl_ty + 7);
 
 cl_can ? ( (cl_down && cl_press && cl_in) ? gfx_set(0.25, 0.55, 0.35, 1) : gfx_set(0.2, 0.42, 0.3, 1); ) : gfx_set(0.25, 0.25, 0.28, 1);
 gfx_rect(cl_bx, cl_by, cl_bw, cl_bh);
@@ -83,6 +259,8 @@ gfx_setfont(2, "Hiragino Sans", 15);
 gfx_x = 14; gfx_y = 58;
 !cl_alive ? (
   gfx_set(1, 0.55, 0.45, 1); gfx_drawstr("スクリプト停止中（TUKONYA_Container Link が動いていません）");
+) : cl_busy ? (
+  gfx_set(0.7, 0.7, 0.7, 1); gfx_drawstr("名前の入力中…");
 ) : cl_st == 3 ? (
   gfx_set(1, 0.55, 0.45, 1); gfx_drawstr("コンテナの中に入れてください");
 ) : cl_st == 2 ? (
