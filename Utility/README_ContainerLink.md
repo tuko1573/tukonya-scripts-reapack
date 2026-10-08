@@ -47,6 +47,7 @@ https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/index.xm
 
 ①
 リンクしたいトラックにコンテナを作り、コンテナの中に「TUKONYA Container Link」を挿して、同じ Link Ch を選ぶ。
+「Link Ch」をクリックすると現在のリンク一覧が開きます。名前の変更は右クリックでも可能です。
 
 ②
 空のコンテナでも、同じ Link Ch を選べば同じプラグインと設定が入ります。
