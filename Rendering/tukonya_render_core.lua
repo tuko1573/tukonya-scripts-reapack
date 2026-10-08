@@ -23,7 +23,7 @@
 local DIR = debug.getinfo(1, "S").source:match("@(.*[/\\])") or ""
 local S = dofile(DIR .. "tukonya_render_settings.lua")
 
-local C = { DIR = DIR, Settings = S, VERSION = "2.9.0" }
+local C = { DIR = DIR, Settings = S, VERSION = "2.9.1" }
 
 -- 親経由パラ（規則4）で「音が混じるかもしれない」ときに、窓からの実行だけ
 -- 「続行／キャンセル」を出すかどうか。将来やめるときはここを false にする。
@@ -2216,26 +2216,32 @@ local function safe_filename(s)
   return s
 end
 
--- トラック状態チャンクから <FXCHAIN ブロックの中身だけを取り出す（入れ子対応）
+-- トラック状態チャンクから <FXCHAIN ブロックの中身だけを取り出す（入れ子対応）。
+-- GetTrackStateChunk は字下げ無しで返す（RPP ファイルは字下げあり）ので、元の字下げは捨てて
+-- REAPER 自身が保存する .RfxChain と同じ形に組み直す: 一番外は字下げ無し、ブロックの中は 2 文字ずつ。
+-- FX チェーン窓の状態行（WNDRECT/SHOW/LASTSEL/DOCKED）は .RfxChain に入れない。
+local FXCHAIN_WINDOW_KEYS = { WNDRECT = true, SHOW = true, LASTSEL = true, DOCKED = true }
 local function extract_fxchain(chunk)
   local lines = {}
-  for line in (chunk .. "\n"):gmatch("([^\n]*)\n") do lines[#lines + 1] = line end
-  local start_i, indent = nil, 0
+  for line in (chunk .. "\n"):gmatch("([^\n]*)\n") do lines[#lines + 1] = (line:gsub("\r$", "")) end
+  local start_i = nil
   for i, line in ipairs(lines) do
-    local sp = line:match("^(%s*)<FXCHAIN%s*$")   -- 入力FX側の <FXCHAIN_REC は拾わない
-    if sp then start_i, indent = i, #sp break end
+    if line:match("^%s*<FXCHAIN%s*$") then start_i = i break end   -- 入力FX側の <FXCHAIN_REC は拾わない
   end
   if not start_i then return nil, "トラック状態に <FXCHAIN が見つかりません" end
   local body, depth = {}, 1
   for i = start_i + 1, #lines do
-    local line = lines[i]
-    if line:match("^%s*<") then
-      depth = depth + 1
-    elseif line:match("^%s*>%s*$") then
+    local line = lines[i]:match("^%s*(.-)%s*$")
+    if line == ">" then
       depth = depth - 1
       if depth == 0 then return table.concat(body, "\n") .. "\n" end
+      body[#body + 1] = string.rep("  ", depth - 1) .. line
+    elseif depth == 1 and FXCHAIN_WINDOW_KEYS[line:match("^(%S+)") or ""] then
+      -- 窓の状態行は捨てる
+    elseif line ~= "" then
+      body[#body + 1] = string.rep("  ", depth - 1) .. line
+      if line:sub(1, 1) == "<" then depth = depth + 1 end
     end
-    body[#body + 1] = line:sub(indent + 3)
   end
   return nil, "<FXCHAIN の閉じ > が見つかりません"
 end
