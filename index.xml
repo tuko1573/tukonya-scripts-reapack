@@ -8,6 +8,19 @@
 <index version="1" name="Tukonya Scripts">
   <category name="Rendering">
     <reapack name="TUKONYA_Render.lua" type="script" desc="TUKONYA RENDER">
+      <version name="2.9.1" author="tuko" time="2026-10-08T12:00:00Z">
+        <changelog><![CDATA[2.9.1: Para + 2mix / Mastering で書き出す MASTER_CHAIN_for-REAPER.RfxChain が REAPER で読み込めなかった不具合を修正（全行の先頭 2 文字が欠けていた）。音・ほかの書き出しファイルは変わらない。]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/TUKONYA_Render.lua</source>
+        <source file="tukonya_render_model.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_render_model.lua</source>
+        <source file="tukonya_render_core.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_render_core.lua</source>
+        <source file="tukonya_render_settings.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_render_settings.lua</source>
+        <source file="tukonya_render_store.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_render_store.lua</source>
+        <source file="tukonya_vstpreset_lib.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_vstpreset_lib.lua</source>
+        <source file="tukonya_mastering_lib.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_mastering_lib.lua</source>
+        <source file="README.md">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/README.md</source>
+        <source file="template/TUKONYA_RENDER_template.RPP">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/template/TUKONYA_RENDER_template.RPP</source>
+        <source file="template/Media/PREVIEWONLY.wav">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/template/Media/PREVIEWONLY.wav</source>
+      </version>
       <version name="2.9.0" author="tuko" time="2026-09-30T00:00:00Z">
         <changelog><![CDATA[2.9.0: Para + 2mix の親トラック経由（サイドチェーン有効化）で、ほかのトラックの音が混じる可能性のあるトラックを、書き出す前に「書き出し」ボタンの上に一覧で表示。今までトラックごとに出ていた「続けますか？」の小窓をやめ、書き出し前に一度だけ確認画面（一覧＋「このまま書き出す」）を出す形にした。「今後この曲では確認ダイアログを表示しない」チェックで曲ごとに省略できる。音・書き出されるファイルは変わらない。]]></changelog>
         <source main="main">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/TUKONYA_Render.lua</source>
