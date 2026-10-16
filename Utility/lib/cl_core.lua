@@ -24,6 +24,7 @@
     hidden state v2 (cl_blob, DESIGN_V2 §2): resolve() slots also carry chain / chain_multi / invisible;
     mouse() -> {down} | nil (no js)   hit(mid, k) -> bool (window under the mouse = the slot's window)
     blog(s) (blob_log.txt)   class_load() / class_save(text) (blob_class.txt)   today()   with_project(key, fn)
+    lag_load() / lag_save(text)  Data/TUKONYA_ChainLink/lag_class.txt: plugins learned as "lagging" (cl_lag; optional, never pruned)
     touched() / focused()        -> {mid, k, p} / {mid, k} or nil (the script's own last write is filtered out)
     cname(mid) / set_cname(mid, s) -> the container's display name (renamed_name, "" = unnamed) / readback; nil = not
                                       readable this tick (address moved by a block write)
@@ -37,6 +38,7 @@ local SS = require("cl_struct")
 local ENV = require("cl_env")
 local L = require("cl_link")
 local BL = require("cl_blob")
+local LAG = require("cl_lag")
 local M = {}
 
 M.SYNC_DESC = "Container Link: 並びをそろえる"   -- the undo entry of a native structure sync (chained to the user's entry)
@@ -58,6 +60,9 @@ M.DEFAULTS = {
   hot_time = 1.0,          -- a param that changed is read every tick for this long
   blob_rate = 0.2,         -- hidden-state reads per watched slot: 5 Hz
   blob_settle = 0.3,       -- live settle (idents classified "stable" only, DESIGN_V2 §2.2)
+  lag_window = 1.0,        -- lagging plugin (cl_lag): after its readback moved, the member's state is read for this long ...
+  lag_rate = 0.1,          -- ... this often (also when no window is open and no js: the readback move is the only signal),
+  lag_settle = 0.2,        -- ... and spreads once it has been still this long (target <= 0.5 s after the last change)
   blob_grace = 1.0,        -- readiness/blob quiet after a load or undo
   witness_while_playing = true,   -- §2.4 witness reads while playing (MBP block gap 12.4 vs 12.1 ms baseline: jitter)
   quiet_after_write = 0.5, -- a blob change right after our own write is not a user edit
@@ -79,9 +84,13 @@ M.DEFAULTS = {
   link_undo = true,                   -- false = LINK makes no undo entry (fallback if its undo/redo cannot be made exact)
   name_records = true,     -- false = names use plain change detection on undo/redo too (tests only: shows why records exist)
   name_rec_refresh = 1.5,  -- a rename with no undo entry of its own updates the current entry's name record after this
+  link_ready_wait = 1.5,   -- LINK from a source whose plugin state is not ready (Nebula family: asleep / loading): waits this long (< the marker's 2 s), then refuses
+  verify_wait = 5.0,       -- after a LINK every slot of every target is compared with the source; what still differs after this is reported
+  verify_gap = 0.25,       -- ... compared at most this often
 }
 
 local function log(io, s) if io.log then io.log(s) end end
+local function needs_ready_slot(S) return S.class == "vst" and LAG.needs_ready(S.ident) end
 
 function M.new(cfg)
   local c = {}
@@ -196,6 +205,27 @@ local function log_diff(st, io, ps, g, a, b, why)
   end
   local function tn(m) local r = ps.info[m]; return r and ("%s(#%s)"):format(r.tname or "?", tostring(r.tindex)) or m end
   io.blog(("diff | Ch %d | %s | %s vs %s | %d: %s"):format(g.ch, why, tn(a), tn(b), #d, table.concat(parts, "; ")))
+  -- 2026-10-15: a plugin whose saved states differ is explainable afterwards: the first differing decoded byte with context
+  -- (cl_lag.first_diff: volatile UI fields already cut out). At most 3 slots per diff, one bounded line each. Log only.
+  local seen, nlines = {}, 0
+  for _, e in ipairs(d) do
+    local S = g.slots and g.slots[e.k]
+    if S and S.class == "vst" and not seen[e.k] and nlines < 3 then
+      seen[e.k] = true
+      local ba, bb = io.blob(a, e.k), io.blob(b, e.k)
+      local fd = LAG.first_diff(S.ident, ba, bb, 32)
+      if fd then
+        nlines = nlines + 1
+        io.blog(("diff chunk | Ch %d | %s | %s vs %s | slot %s %s | %s"):format(g.ch, why, tn(a), tn(b), tostring(e.k), LAG.base(S.ident), fd))
+      elseif ba and bb and ba ~= "" and bb ~= "" and ba ~= bb then
+        nlines = nlines + 1
+        io.blog(("diff chunk | Ch %d | %s | %s vs %s | slot %s %s | states differ only by a volatile UI field (masked)"):format(g.ch, why, tn(a), tn(b), tostring(e.k), LAG.base(S.ident)))
+      elseif ba == "" or bb == "" or not ba or not bb then
+        nlines = nlines + 1
+        io.blog(("diff chunk | Ch %d | %s | %s vs %s | slot %s %s | state unreadable (len %d / %d)"):format(g.ch, why, tn(a), tn(b), tostring(e.k), LAG.base(S.ident), #(ba or ""), #(bb or "")))
+      end
+    end
+  end
   end)
   if not ok then log(io, "diff log failed: " .. tostring(err)) end
 end
@@ -271,6 +301,11 @@ local function align_all(st, io, g, src, dst, ctx)
 end
 
 local function run_job(st, io, ps, job, ctx)
+  if job.kind == "notice" then          -- a message for the user (LINK verification / refused LINK): an OK box, no choice, no group
+    io.ask(job.text, "ok")
+    st.stats.notices = (st.stats.notices or 0) + 1
+    return
+  end
   local g = ps.groups[job.ch]
   if not g then return end
   local desc = ("Container Link: Ch %d をそろえる"):format(g.ch)
@@ -488,6 +523,100 @@ local function struct_step(st, io, ps, g, ctx)
   return true
 end
 
+-- ------------------------------------------------------------------ LINK: overwrite, then verify (2026-10-15)
+local function fxname(io, mid, k, ident)
+  local ok, n = pcall(function() return io.fxname and io.fxname(mid, k) end)
+  return (ok and n and n ~= "") and n or LAG.base(ident)
+end
+
+--- after a LINK (run_link sets g.verify): once the targets are ready, every slot of every target is compared with the source by the
+--- same rules as a join (cl_params.diff_detail: saved state for the lagging lane, readbacks for the others, bypass). Nothing is
+--- written here. What still differs at the deadline (or could not be checked because a state was asleep / loading) is reported ONCE:
+--- the log, the event log and one notice for the user (a job: shown when the transport is stopped).
+local function verify_step(st, io, ps, g, ctx)
+  local V = g.verify
+  if not V then return end
+  local cfg, now = st.cfg, ctx.now
+  -- the undo position: LINK's own entry is c0 + 1 (REAPER may show it a tick or two late); back at c0 after having seen it, or below
+  -- c0, or a project reload = the LINK was undone / the project changed: nothing to verify any more
+  if ctx.cur == V.cur0 + 1 then V.seen = true end
+  if ctx.reload or ctx.cur < V.cur0 or (V.seen and ctx.cur <= V.cur0) then
+    g.verify = nil
+    log(io, ("LINK Ch %d verify dropped (undo position %s, LINK was at %s%s)"):format(g.ch, tostring(ctx.cur), tostring(V.cur0), ctx.reload and ", reload" or ""))
+    return
+  end
+  if now < (V.next or 0) then return end
+  V.next = now + cfg.verify_gap
+  local src = V.src
+  if not (g.linked[src] and ctx.res[src]) then
+    g.verify = nil
+    log(io, ("LINK Ch %d verify dropped (the source %s is no longer a linked member)"):format(g.ch, tostring(src)))
+    return
+  end
+  local pending, diffs, unchecked = false, {}, {}
+  for _, t in ipairs(V.targets) do
+    if not (g.linked[t] and ctx.res[t]) then
+      -- the target left the Ch / was declined / is gone: logged where it happened, nothing to compare
+    elseif not g.slots or ctx.res[t].sig ~= g.agreed_sig then
+      pending = true                                                           -- the group is being rebuilt / the content is in flux: nothing can be compared yet
+      unchecked[#unchecked + 1] = { t = t }
+    else
+      if g.post_align[t] then pending = true end
+      for _, k in ipairs(g.order) do
+        local S = g.slots[k]
+        local rd = S.rd[t]
+        if rd and (rd.out or not rd.ok) then pending = true; unchecked[#unchecked + 1] = { t = t, k = k, S = S } end
+        if needs_ready_slot(S) and not (P.state_ok(st, io, t, k, S.ident, now) and P.state_ok(st, io, src, k, S.ident, now)) then
+          pending = true; unchecked[#unchecked + 1] = { t = t, k = k, S = S }
+        end
+      end
+      local d = P.diff_detail(st, io, g, src, t, 6)
+      for _, e in ipairs(d) do diffs[#diffs + 1] = { t = t, e = e } end
+    end
+  end
+  if #diffs == 0 and not pending then
+    g.verify = nil
+    log(io, ("LINK Ch %d verified: every slot of %d target(s) equals the source"):format(g.ch, #V.targets))
+    if io.event then io.event(("LINK Ch %d verified: all targets equal the source"):format(g.ch)) end
+    return
+  end
+  if now < V.deadline then return end
+  g.verify = nil
+  local lines, seen = {}, {}
+  for _, d in ipairs(diffs) do
+    local S = g.slots[d.e.k]
+    local key = d.t .. "|" .. tostring(d.e.k)
+    if S and not seen[key] then
+      seen[key] = true
+      local why = d.e.p == "state" and "保存された設定の中身が違います" or d.e.p == "bypass" and "バイパスの状態が違います" or "つまみの値が違います"
+      lines[#lines + 1] = ("・「%s」の「%s」（%s）"):format(tname(ps, d.t), fxname(io, d.t, d.e.k, S.ident), why)
+    end
+  end
+  local ulines = {}
+  for _, u in ipairs(unchecked) do
+    local key = u.t .. "|" .. tostring(u.k)
+    if not seen[key] then
+      seen[key] = true
+      if u.k == nil then ulines[#ulines + 1] = ("・「%s」（プラグインの並びが変わっている最中で、確かめられませんでした）"):format(tname(ps, u.t))
+      else ulines[#ulines + 1] = ("・「%s」の「%s」（まだ読み込み中、または一度も窓が開かれていないため、確かめられませんでした）"):format(tname(ps, u.t), fxname(io, u.t, u.k, u.S.ident)) end
+    end
+  end
+  local seen_t = {}
+  for _, d in ipairs(diffs) do if not seen_t[d.t] then seen_t[d.t] = true; log_diff(st, io, ps, g, src, d.t, "LINK verify") end end
+  if #lines == 0 and #ulines == 0 then
+    log(io, ("LINK Ch %d verify ended without a result (still waiting for post-align: %s)"):format(g.ch, tostring(pending)))
+    ulines[1] = "・（確認が時間内に終わりませんでした）"
+  end
+  local parts = { ("LINK のあと、Ch %d の次のプラグインが、元のトラック「%s」と同じになっていません。"):format(g.ch, tname(ps, src)) }
+  if #lines > 0 then parts[#parts + 1] = "\n" .. table.concat(lines, "\n") end
+  if #ulines > 0 then parts[#parts + 1] = "\n確かめられなかったもの:\n" .. table.concat(ulines, "\n") end
+  parts[#parts + 1] = "\nそのプラグインの窓を開いて見比べ、必要ならもう一度 LINK してください。"
+  local text = table.concat(parts, "\n")
+  log(io, ("LINK Ch %d verify: %d different, %d not checked"):format(g.ch, #lines, #ulines))
+  if io.event then io.event(("LINK Ch %d verify: %d slot(s) still different, %d not checked (reported to the user)"):format(g.ch, #lines, #ulines)) end
+  ps.jobs[#ps.jobs + 1] = { kind = "notice", ch = 0, text = text }
+end
+
 local function process_group(st, io, ps, g, ctx, settling)
   local cfg, now = st.cfg, ctx.now
   table.sort(g.members, function(a, b) return (ps.info[a] and ps.info[a].tindex or 1e9) < (ps.info[b] and ps.info[b].tindex or 1e9) end)
@@ -582,6 +711,14 @@ local function process_group(st, io, ps, g, ctx, settling)
       ready_all[m], ctx.loading[m] = all, ld
     end
   end
+  -- Nebula family (EL REY2): a member whose plugin state is asleep / loading / still changing is neither joined nor compared nor used as a
+  -- source (deferred, never a dialog). Read lazily, at most every P.SAMPLE_GAP per member and slot, and only for members that are asked about.
+  local lagok_c = {}
+  local function lagok(m)
+    local v = lagok_c[m]
+    if v == nil then v = P.member_state_ok(st, io, g, m, now); lagok_c[m] = v end
+    return v
+  end
   -- 3b. lanes on the container (P3): sync + undo restore; also sets the value-sync exclusions S.env (MUST 9)
   do
     local lm = {}
@@ -602,22 +739,29 @@ local function process_group(st, io, ps, g, ctx, settling)
       if g.adopt[m] then
         local src = g.adopt[m]
         if not g.linked[src] then src = ref end
-        if src and ready_all[m] and ready_all[src] then
+        if src and ready_all[m] and ready_all[src] and lagok(m) and lagok(src) then
           align_all(st, io, g, src, m, ctx)                -- values verified against the group (MUST 6), silent
           g.adopt[m] = nil
           link(st, io, g, m)
         end
       elseif ps.declined[m .. "|" .. g.ch] then
-        if ref and ready_all[m] and ready_all[ref] and now >= (g.recheck[m] or 0) then
+        if ref and ready_all[m] and ready_all[ref] and now >= (g.recheck[m] or 0) and lagok(m) and lagok(ref) then
           g.recheck[m] = now + cfg.recheck
           if P.diff(st, io, g, ref, m) == 0 then ps.declined[m .. "|" .. g.ch] = nil; link(st, io, g, m) end
         end
       else joiners[#joiners + 1] = m end
     end
   end
+  -- Nebula family: a joiner whose plugin state is asleep / loading waits outside this round (neither compared nor asked, and it does not
+  -- hold back the others); it is looked at again every tick
+  do
+    local jn = {}
+    for _, j in ipairs(joiners) do if not (ready_all[j] and not lagok(j)) then jn[#jn + 1] = j end end
+    joiners = jn
+  end
   if ref then
     for _, j in ipairs(joiners) do
-      if ready_all[j] and ready_all[ref] then
+      if ready_all[j] and ready_all[ref] and lagok(j) and lagok(ref) then
         local nd, first = P.diff(st, io, g, ref, j)
         if nd == 0 then link(st, io, g, j)
         else
@@ -630,7 +774,7 @@ local function process_group(st, io, ps, g, ctx, settling)
     end
   elseif #joiners > 0 then
     local all = true
-    for _, j in ipairs(joiners) do if not ready_all[j] then all = false end end
+    for _, j in ipairs(joiners) do if not (ready_all[j] and lagok(j)) then all = false end end
     if all then
       if #joiners == 1 then link(st, io, g, joiners[1])
       else
@@ -671,8 +815,7 @@ local function process_group(st, io, ps, g, ctx, settling)
         local pa = g.pa_done[t] or {}
         g.pa_done[t] = pa
         if not pa[k] and g.linked[t] and g.linked[src] and S.rd[t] and S.rd[t].ok and S.rd[src] and S.rd[src].ok then
-          P.align_slot(st, io, g, S, src, t, ctx, false)
-          pa[k] = true
+          if P.align_slot(st, io, g, S, src, t, ctx, false) ~= false then pa[k] = true end    -- false: the source state is not ready, retried
         end
       end
       if ctx.flush or next(S.pend) or next(S.pend_byp) or next(S.pend_blob) then P.flush(st, io, g, S, mem, ctx) end
@@ -692,11 +835,12 @@ local function process_group(st, io, ps, g, ctx, settling)
       -- a member back from the readiness timeout takes the group's state of this slot (silent, logged)
       for _, m in ipairs(mem) do
         if S.rd[m].reenter then
-          S.rd[m].reenter = false
           local src = nil
           for _, o in ipairs(mem) do if o ~= m then src = o; break end end
+          local wait = src and P.needs_ready(S) and not (P.state_ok(st, io, m, k, S.ident, now) and P.state_ok(st, io, src, k, S.ident, now))
+          if not wait then S.rd[m].reenter = false end        -- Nebula family: not compared while a state is asleep / loading (kept, retried)
           -- P1_REVIEW MUST 3: equal → nothing; different → never overwrite silently: ask (Q2 dialog) when stopped
-          if src and P.slot_diff(st, io, S, src, m) > 0 then
+          if not wait and src and P.slot_diff(st, io, S, src, m) > 0 then
             g.linked[m] = nil; P.forget(g, m)
             g.asking[m] = true
             ps.jobs[#ps.jobs + 1] = { kind = "join", ch = g.ch, mid = m }
@@ -734,6 +878,20 @@ local function process_group(st, io, ps, g, ctx, settling)
           ps.jobs[#ps.jobs + 1] = { kind = "join_struct", ch = g.ch, mid = m, sig = r.sig }
           log(io, ("Ch %d: %s has a different FX order, ask when stopped"):format(g.ch, m))
         end
+      end
+    end
+  end
+  -- 7b. drift audit (diagnostic only, 2026-10-10): linked members that differ while nobody is editing are logged once
+  if g.slots and not (ctx.playing or ctx.recording or settling) and now >= (g.audit_t or 0) then
+    g.audit_t = now + 10
+    g.audit_seen = g.audit_seen or {}
+    local ref = first_linked(g)
+    for _, m in ipairs(g.members) do
+      if ref and m ~= ref and g.linked[m] and ctx.res[m] and lagok(m) and lagok(ref) then      -- (Nebula family: not while a state is loading)
+        local ok, d = pcall(P.diff_detail, st, io, g, ref, m, 1)
+        local key = ok and d[1] and (tostring(d[1].k) .. ":" .. tostring(d[1].p)) or nil
+        if key and g.audit_seen[m] ~= key then log_diff(st, io, ps, g, ref, m, "drift while linked") end
+        g.audit_seen[m] = key
       end
     end
   end
@@ -1044,14 +1202,28 @@ local function run_link(st, io, ps, ctx, entries, rr)
         for _, p in ipairs(S.meta.list) do if P.synced(S, p) then ls[p] = io.get(src, k, p) end end
         S.last[src] = ls
         for p, v in pairs(ls) do S.agreed[p] = v end
+        local bsrc = S.class == "vst" and io.blob(src, k) or nil
         for _, t in ipairs(x.ready) do
           local lt = {}
           local same_n = ctx.res[t].slots[k] and ctx.res[t].slots[k].n == ctx.res[src].slots[k].n
+          -- the block carried the state byte for byte: the plugin's own params are already the source's in sound. Some
+          -- plugins keep showing defaults after a load (TR5 EQ-81 [M tests/probes/RESULTS_TR5_GAIN.md]), so writing the
+          -- source's readbacks here would put those defaults into the target (2026-10-10). A lossy block (LED) differs → written.
+          local same_state = bsrc and bsrc ~= "" and P.same_state(S, io.blob(t, k), bsrc)
+          -- a lagging plugin (cl_lag) carries its settings in the block only: if the block did not deliver the state, write it
+          if bsrc and bsrc ~= "" and not same_state and P.lagging(S) then
+            if P.write_state(st, io, S, t, bsrc) then P.mark_written(S, t, bsrc, now, cfg) end
+          end
           for _, p in ipairs(S.meta.list) do
             local v = ls[p]
             if v ~= nil then
               if ctx.held[t] or not same_n then lt[p] = io.get(t, k, p); S.pend[t] = ctx.held[t] or nil
+              elseif same_state and p >= 0 then
+                lt[p] = io.get(t, k, p)
+                if math.abs(lt[p] - v) > P.LAG_MIN_DIFF then P.lag_evidence(st, io, S, "LINK: same saved state, readbacks differ", now) end
+              elseif p < 0 and math.abs((io.get(t, k, p) or v + 1) - v) <= 1e-9 then lt[p] = v        -- an equal Wet/Delta is not written (it can make REAPER add an undo entry)
               else lt[p] = io.set(t, k, p, v); st.stats.writes = st.stats.writes + 1 end
+            elseif p >= 0 and P.scannable(S, p) then lt[p] = io.get(t, k, p)     -- lagging: baseline for the edit signal only
             end
           end
           if not same_n then log(io, ("Ch %d slot %s: LINK skipped values on %s (param count differs)"):format(g.ch, tostring(k), t)) end
@@ -1109,6 +1281,10 @@ local function run_link(st, io, ps, ctx, entries, rr)
     if not g.slots then g.build_from = src end
     rec_mark_all(g)
     g.link_tick = true
+    -- "overwrite, then verify": checked once the targets are ready (verify_step), reported if anything still differs
+    local vt = {}
+    for _, t in ipairs(x.ready) do if g.linked[t] then vt[#vt + 1] = t end end
+    g.verify = #vt > 0 and { src = src, targets = vt, t0 = now, deadline = now + cfg.verify_wait, cur0 = ctx.cur } or nil
     for _, m in ipairs(g.members) do ps.flash[m] = { code = ST.LINKED, untl = now + cfg.link_flash } end
     for _, m in ipairs(x.e.notes or {}) do ps.flash[m] = { code = ST.LINK_NOTE, untl = now + cfg.link_note } end
     st.stats.links = (st.stats.links or 0) + 1
@@ -1164,7 +1340,58 @@ local function link_step(st, io, ps, ctx, rr)
     ps.link_hold = {}
     ev(io, ("LINK: %d held request(s) executed after the transport stopped"):format(#held))
   end
+  -- Nebula family (EL REY2): LINK copies the source's plugin state into every target (the container block carries it), so a source
+  -- whose state is asleep (window never opened) / still loading is not copied. The request waits (link_ready_wait), then it is
+  -- refused: nothing is written, one notice says which plugin to open. (A request that waits is ack'ed when it ends.)
+  local since
+  local pd = ps.link_pending
+  if pd then
+    ps.link_pending = nil
+    for i = #pd.run, 1, -1 do table.insert(run, 1, pd.run[i]) end
+    for i = #pd.acks, 1, -1 do table.insert(acks, 1, pd.acks[i]) end
+    since = pd.since
+  end
   if #run == 0 then return end
+  do
+    local bad = {}
+    for _, e in ipairs(run) do
+      local r = ctx.res[e.src]
+      if r then
+        for _, k in ipairs(r.order) do
+          local info = k ~= "c" and r.slots[k]
+          if info and info.class == "vst" then
+            if LAG.SNIFFED[info.ident] == nil then LAG.sniff(info.ident, io.blob(e.src, k)) end
+            if LAG.needs_ready(info.ident) and not P.state_ok(st, io, e.src, k, info.ident, now) then
+              bad[#bad + 1] = { ch = e.ch, mid = e.src, k = k, ident = info.ident }
+            end
+          end
+        end
+      end
+    end
+    if #bad > 0 then
+      since = since or now
+      if now - since < cfg.link_ready_wait then
+        ps.link_pending = { run = run, acks = acks, since = since }
+        return
+      end
+      local names, seen = {}, {}
+      for _, b in ipairs(bad) do
+        local key = b.mid .. "|" .. tostring(b.k)
+        if not seen[key] then seen[key] = true; names[#names + 1] = ("・「%s」の「%s」"):format(tname(ps, b.mid), fxname(io, b.mid, b.k, b.ident)) end
+      end
+      local text = "LINK しませんでした（何も書き換えていません）。LINK の元になるトラックの次のプラグインが、まだ読み込み中か、" ..
+        "一度も窓が開かれていない状態で、設定の中身を確かめられません。\n\n" .. table.concat(names, "\n") ..
+        "\n\nそのプラグインの窓を開き、読み込みが終わってから、もう一度 LINK してください。"
+      ev(io, ("LINK refused: the source plugin state is not ready (asleep / loading): %s"):format(table.concat(names, " ")))
+      local gm = false
+      for _, req in ipairs(acks) do
+        if req.via == "gmem" then gm = true end
+        if io.link_ack then io.link_ack(req, L.CODE.FAILED, req.via == "gmem" and L.TEXT[L.CODE.FAILED] or text) end
+      end
+      if gm then ps.jobs[#ps.jobs + 1] = { kind = "notice", ch = 0, text = text } end
+      return
+    end
+  end
   local per, order = {}, {}
   for _, e in ipairs(run) do if not per[e.ch] then order[#order + 1] = e.ch end; per[e.ch] = e end
   local list = {}
@@ -1423,6 +1650,16 @@ function M.tick(st, io)
         -- not re-sync in either direction (its chunk writes would be outside REAPER's snapshots)
         if chained then rec = nil end
         g.restore = rec and { rec = rec, t0 = now } or nil
+        -- lagging plugins (cl_lag, EL REY2 / TR5): NO restore from a record. REAPER's own undo has put some tracks' states back; the
+        -- members' agreed baseline is the state of the entry we just LEFT (its record); whichever member now holds another state is
+        -- treated as a normal edit and spread by state (cl_blob.step, trigger "lag settle"). 2026-10-15, user decision.
+        local from = ps.hist[ps.last_cur]
+        local prev = g.lag_undo
+        -- undo burst (2026-10-16, [M tests/mbp_run/v2/LOG_elaccept1.txt U1a/U1b]): a 2nd Ctrl+Z before cl_blob.step applied the 1st one's
+        -- baseline keeps the 1st (the state of the entry left by the FIRST undo of the burst): with the 2nd one's, the members REAPER's
+        -- 1st undo did not move would look like the edit and the undone state would be spread back
+        if prev and not prev.seen and now - prev.t < 5 then prev.t = now
+        else g.lag_undo = (not chained and from and from.ch[ch]) and { base = from.ch[ch], t = now } or nil end
         g.env_restore = rec and rec.env and { env = rec.env.lanes, members = rec.env.members,
                                               -- onto a LINK entry: its lanes may have been written after stop, outside the
                                               -- entry's snapshot → restore them even if no member "changed" (3rd attempt)
@@ -1571,6 +1808,7 @@ function M.tick(st, io)
       -- names first: on an undo tick process_group may return early (restore pending), the names must not wait for it
       name_step(st, io, ps, g, ctx)
       process_group(st, io, ps, g, ctx, settling)
+      verify_step(st, io, ps, g, ctx)          -- (outside process_group: its early returns must not hide a mismatch)
     end
     -- MUST 1 per slot: a slot that is not swept this tick (suspended by readiness / settling / an early return while a
     -- restore waits, or fewer than 2 members) starts its fresh full sweep again — its readback may be older than REAPER's

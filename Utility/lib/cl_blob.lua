@@ -16,6 +16,7 @@
 --]]
 local P = require("cl_params")
 local CL = require("cl_blobclass")
+local LAG = require("cl_lag")
 local M = {}
 
 local function log(io, s) if io.log then io.log(s) end end
@@ -67,6 +68,7 @@ end
 --- spread the committed blob of src to every other member of the slot
 local function spread(st, io, ps, g, S, mem, src, blob, js, ctx)
   local mouse = ctx.mouse
+  S.lu_open = nil              -- the move of an earlier Ctrl+Z / Ctrl+Shift+Z (if any) is being spread now (see step: undo burst)
   for _, t in ipairs(mem) do
     if t ~= src then
       local Bt = S.blob[t]
@@ -122,7 +124,12 @@ local function commit(st, io, ps, g, S, mem, m, ctx, trig)
     blog(io, ("deferral ended by a js commit | %s | Ch %d"):format(S.ident, g.ch))
     S.deferred, S.defer_until = nil, nil
   end
-  if S.deferred or guard(io, g, S, m, backed, ctx) then
+  -- a lagging plugin's commit starts from a readback move of that member (a real edit signal, not a self-moving blob) and its
+  -- spread cannot echo back (targets' readbacks do not follow): the ping-pong guard does not apply (a user turning
+  -- the knob three times in a few seconds is not a ping-pong, and a loop cannot start: a readback that moves without a state change
+  -- makes no commit, since commit needs the chunk to differ from the agreed one)
+  local lagsig = (trig == "lag settle" or trig == "lag end")
+  if S.deferred or guard(io, g, S, m, backed or lagsig, ctx) then
     if not S.deferred then
       S.defer_until = ctx.now + 30
       blog(io, ("deferral | %s | Ch %d | 3 commits in 10 s or A→B→A without a press: hidden-state spreads of this slot wait ≤ 30 s"):format(S.ident, g.ch))
@@ -171,7 +178,7 @@ local function witness(st, io, g, S, mem, ctx, ps)
         local B = S.blob[m] or {}
         if r and r ~= "" and W.last then
           if ctx.playing and W.t then W.play = (W.play or 0) + (now - W.t) end
-          if r ~= W.last then
+          if not P.same_state(S, r, W.last) then
             local explained = (B.explained and B.explained >= (W.t or 0) - 0.5) or (B.quiet_until and now < B.quiet_until + 0.5)
               or ((ps.t_reload or -1e9) >= (W.t or 0) - 0.5)
             if not explained and B.wrote and #r == #B.wrote then
@@ -196,6 +203,19 @@ local function witness(st, io, g, S, mem, ctx, ps)
   end
 end
 
+-- ------------------------------------------------------------------ lagging plugins (cl_lag): edit signal → chunk spread
+--- m's baseline chunk when it has none: the current state of a member that was not just edited (linked members of a slot
+--- hold the same state by definition, and the edited one's own baseline would already contain the edit)
+local function lag_baseline(io, S, mem, m, now, cfg)
+  for _, o in ipairs(mem) do
+    local Bo = S.blob[o]
+    if o ~= m and not (Bo and Bo.sig_t and now - Bo.sig_t < cfg.lag_window) then
+      local b = io.blob(o, S.k)
+      if b and b ~= "" and not (P.needs_ready(S) and LAG.asleep(b)) then return b end
+    end
+  end
+end
+
 -- ------------------------------------------------------------------ one slot per tick
 function M.step(st, io, ps, g, S, mem, ctx)
   if S.class ~= "vst" or S.demoted then return end
@@ -210,11 +230,54 @@ function M.step(st, io, ps, g, S, mem, ctx)
     blog(io, ("deferral over | %s | Ch %d | the latest commit is applied"):format(S.ident, g.ch))
     if ctx.res[d.src] then spread(st, io, ps, g, S, mem, d.src, d.blob, d.js, ctx) end
   end
+  local lag = P.lagging(S)
+  -- after the user's Ctrl+Z / Ctrl+Shift+Z (cl_core: g.lag_undo): every member's baseline = the state of the entry we left (its record);
+  -- a member that now holds another state was moved by REAPER's undo and is treated as an edit (read at lag_rate, spread by state)
+  local lu = g.lag_undo
+  -- undo burst (2026-10-16, [M tests/mbp_run/v2/LOG_elaccept1.txt U1a/U1b]): a 2nd Ctrl+Z 0.2 s after the 1st, before the 1st one's move
+  -- was spread. Re-baselining to the entry left by the 2nd would make the members the 1st spread had not reached yet (still the old
+  -- state) look like the edit, and spread the undone state back. While the 1st move is open, its baseline is kept: the member REAPER
+  -- moved stays the pending edit, and a member the 2nd undo moves differs from its baseline as well.
+  if S.lu_open and lu and S.lag_undo_seen ~= lu then
+    S.lag_undo_seen = lu
+    lu.seen = true
+    for _, m in ipairs(mem) do             -- read every member again soon (REAPER's undo moves no readback); baselines unchanged
+      local B = S.blob[m]
+      if B then B.sig_t, B.next = now, 0 end
+    end
+    blog(io, ("undo | %s | Ch %d slot %s: the previous undo's move is not spread yet: its baseline is kept"):format(S.ident, g.ch, tostring(S.k)))
+  end
+  if S.lu_open and now - (S.lu_t or 0) > (cfg.lag_undo_open or 3.0) then
+    local any = false
+    for _, m in ipairs(mem) do local B = S.blob[m]; if B and B.pending then any = true; break end end
+    if not any then S.lu_open = nil end
+  end
+  if lag and lu and S.lag_undo_seen ~= lu then
+    S.lag_undo_seen = lu
+    S.lu_open, S.lu_t = true, now
+    lu.seen = true
+    local rec = lu.base.slots and lu.base.slots[S.k]
+    if rec and rec.blob and rec.ident == S.ident then
+      for _, m in ipairs(mem) do
+        local B = S.blob[m]
+        if not B then B = {}; S.blob[m] = B end
+        B.agreed, B.sig_t = rec.blob, now
+        B.pending, B.held, B.pressed, B.quiet_until, B.quiet_keep, B.wrote = false, nil, false, nil, nil, nil
+        B.next = 0
+      end
+      blog(io, ("undo | %s | Ch %d slot %s: no restore; each member is read against the state of the entry left, the one that differs spreads"):format(S.ident, g.ch, tostring(S.k)))
+    end
+  end
+  if lu and now - lu.t > 20 then g.lag_undo = nil end
+  local nr = lag and P.needs_ready(S)         -- Nebula family (EL REY2): an asleep / loading / still-changing state is never committed
   for _, m in ipairs(mem) do
     local B = S.blob[m]
     if not B then B = {}; S.blob[m] = B end
     local w = M.watched(S, m, ctx)
     local was = B.watched
+    -- a lagging slot: its readback moved (cl_params lag_signal) = this member was edited, with or without a window / js
+    local la = lag and B.sig_t ~= nil and (now - B.sig_t < cfg.lag_window or B.pending == true)
+    if la and B.agreed == nil then B.agreed = lag_baseline(io, S, mem, m, now, cfg) end
     if mouse and mouse.press and w then
       ctx.any_watched = true
       if io.hit and io.hit(m, S.k) then B.pressed = true; ctx.hit_any = true end
@@ -226,19 +289,31 @@ function M.step(st, io, ps, g, S, mem, ctx)
       B.quiet_until, B.quiet_keep, B.wrote = nil, nil, nil       -- written while unwatched: agreed re-taken at its next read
       B.agreed = nil
     end
-    local ended = was and not w
+    local ended = (was and not w) or (B.end_wait ~= nil)          -- (end_wait: a watch end whose commit waits for a ready state)
+    if B.end_wait and now - B.end_wait > 10 then B.end_wait = nil; ended = was and not w or false end
     local read_now = false
-    if (w and now >= (B.next or 0)) or ended then
+    if (w and now >= (B.next or 0)) or ended or (la and now >= (B.next or 0)) then
       local t0 = clock()
       local r = io.blob(m, S.k)
       local dt = clock() - t0
       st.stats.blob_reads = st.stats.blob_reads + 1
       read_now = true
       -- per-slot phase so several open windows never read in the same tick
-      B.next = now + (B.slow and 1.0 or cfg.blob_rate)
-      if dt > 0.010 or (r and #r > 262144) then
+      -- a lagging plugin's state is its only sync path: a signalled edit is read at lag_rate; a watched slot keeps the normal
+      -- rate even when its reads are slow (1 Hz would be the whole latency of an edit that moves no readback), except while playing
+      local rate = cfg.blob_rate
+      if la then rate = cfg.lag_rate
+      elseif lag and not ctx.playing then rate = cfg.lag_rate
+      elseif B.slow then rate = 1.0 end
+      B.next = now + rate
+      -- demotion = the slot syncs values and bypass only. A lagging slot has no values to fall back on: its own params would
+      -- not sync at all, so one slow read (a spike) never demotes it: 3 slow reads in a row, or a huge state
+      local slow_read = dt > 0.010
+      if lag then B.slow_n = slow_read and ((B.slow_n or 0) + 1) or 0; slow_read = B.slow_n >= 3 end
+      if slow_read or (r and #r > 262144) then
         S.demoted = true
-        blog(io, ("params_only | %s | blob read %.1f ms, %d chars: values and bypass only this session"):format(S.ident, dt * 1000, r and #r or 0))
+        blog(io, ("params_only | %s | blob read %.1f ms, %d chars: values and bypass only this session%s"):format(S.ident, dt * 1000, r and #r or 0,
+          lag and " (LAGGING plugin: its own params are not synced at all now)" or ""))
         return
       elseif dt > 0.002 and not B.slow then
         B.slow = true
@@ -257,24 +332,50 @@ function M.step(st, io, ps, g, S, mem, ctx)
           B.agreed = r
           B.quiet_until, B.quiet_keep = nil, nil
         end
-        if r ~= B.last then B.t_change = now end
+        if not P.same_state(S, r, B.last) then B.t_change = now end
         B.last = r
-        B.pending = (B.quiet_until == nil) and (r ~= B.agreed)
+        B.pending = (B.quiet_until == nil) and not P.same_state(S, r, B.agreed)
+        if nr and LAG.asleep(r) then B.was_asleep = true end
+        if nr and B.pending then
+          local stable = B.t_change and now - B.t_change >= P.SAMPLE_GAP
+          if LAG.asleep(r) then B.pending = false                              -- the valueless state is never an edit
+          elseif B.was_asleep or (B.agreed and LAG.asleep(B.agreed)) then
+            -- the instance woke (window opened / state loaded): its first usable state is its baseline, not an edit of the group's
+            -- settings. Nothing is spread and nothing is written; a later edit of this member spreads as usual.
+            B.pending = false
+            if stable then
+              B.agreed, B.was_asleep = r, nil
+              blog(io, ("woke | %s | Ch %d slot %s: %s left the asleep state, its state is the new baseline (nothing spread, nothing written)"):format(S.ident, g.ch, tostring(S.k), m))
+            end
+          end
+        end
       end
     end
     -- commit events
     local trig
     if ended then trig = "watch end"
     elseif read_now and B.pending and B.pressed and B.t_up and not (mouse and mouse.down) and now - B.t_up >= 0.15 then trig = "js"
-    elseif read_now and B.pending and w and cls == "stable" and B.t_change and now - B.t_change >= cfg.blob_settle then trig = "settle" end
+    elseif read_now and B.pending and w and cls == "stable" and B.t_change and now - B.t_change >= cfg.blob_settle then trig = "settle"
+    elseif read_now and B.pending and (w or la) and lag and B.t_change and now - B.t_change >= cfg.lag_settle then trig = "lag settle"
+    elseif read_now and B.pending and la and lag and not w and B.sig_t and now - B.sig_t >= cfg.lag_window then trig = "lag end" end
+    if trig and nr and B.pending and not (B.t_change and now - B.t_change >= P.SAMPLE_GAP) then
+      -- not ready: the state changed less than SAMPLE_GAP ago (loading, or an edit still going on). Deferred, not dropped: a watch end
+      -- is remembered, any other trigger fires again on a later read.
+      if trig == "watch end" then B.end_wait = B.end_wait or now end
+      trig = nil
+    end
     if trig and B.pending then
+      B.end_wait = nil
       commit(st, io, ps, g, S, mem, m, ctx, trig)
+      B.sig_t = nil
     elseif read_now and B.pressed and B.t_up and not B.pending and not (mouse and mouse.down) and now - B.t_up >= 0.15 then
       -- the plugin may store its state later: one re-check at +0.5 s (the press stays until watch end)
       if not B.recheck then B.recheck = B.t_up + 0.5; B.next = math.min(B.next, B.recheck)
       elseif now >= B.recheck then B.t_up = nil; B.recheck = nil end
     end
-    if ended then B.pressed = false; B.t_up = nil; B.recheck = nil; B.pending = false end
+    if B.end_wait and not B.pending then B.end_wait = nil end
+    if ended and B.end_wait == nil then B.pressed = false; B.t_up = nil; B.recheck = nil; B.pending = false end
+    if B.sig_t and not B.pending and now - B.sig_t >= cfg.lag_window + cfg.lag_rate then B.sig_t = nil end
     -- a held inbound write: applied once this member has no pending difference and no button down in its window
     if B.held and not B.pending and not (w and mouse and mouse.down) then
       local h = B.held

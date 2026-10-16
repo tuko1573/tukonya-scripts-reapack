@@ -12,16 +12,23 @@ desc:TUKONYA Container Link
 // [1100 + (Ch-1)*128 + i] 名前の i バイト目（UTF-8、最大120バイト） [1040] 名前変更の依頼番号 [1041] Ch [1042] 依頼の時刻
 // [1043] 返事の番号 [1044] 返事の内容 [1045] 1=名前の入力窓が開いている間（見張りは止まって見えるが動いている）
 // [1046] 一覧で選んだ Ch [1047] その時刻 [1048] 通し番号（見張りが「元に戻せる保存」を1つ作る）。
+// 状態の表示（2026-10-16）: [1050] インスタンス番号の数え上げ、[8192 + (番号 % 8192)] この目印の状態+1（見張りが書く、0=未記入）。
+// 隠しスライダー2 は自分の番号（1001 以上）を自分で入れておく場所（見張りはそれを読むだけ）。スクリプトからスライダーへ
+// 書くと REAPER が「FXパラメータを編集」の元に戻す項目を作り、Ctrl+Z の後のやり直しが消える [M tests/mbp_run/v2/LOG_elundoctl5.txt K0/K3]。
+// 目印自身の代入は項目を作らない [M LOG_iidgate3.txt]。
 // Link Ch の標準の選択欄は隠してある（"-" 始まり。番号・範囲・並びは今までどおりなので保存済みプロジェクトもオートメーションもそのまま）。
 // 画面の見出し「Link Ch N」をクリックすると自前の一覧が開く。
 slider1:cl_link_ch=0<0,16,1{Off,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16}>-Link Ch
-slider2:cl_status=0<0,15,1>-Status
+slider2:cl_status=0<0,2147483647,1>-Status
 slider3:cl_link_req=0<0,2147483647,1>-LinkReq
 in_pin:none
 out_pin:none
 options:gmem=TUKONYA_ChainLink
 
 @init
+// own instance number: kept across a re-run of @init (playback start); a copy / a reload is a new instance → a new number
+cl_my_id <= 0 ? cl_my_id = atomic_add(gmem[1050], 1) + 1001;
+cl_status = cl_my_id;          // bare assignment: no undo entry [M LOG_iidgate3.txt]
 cl_last_hb = -1;
 cl_last_t = 0;
 cl_ch = floor(cl_link_ch + 0.5);
@@ -167,6 +174,10 @@ function cl_fit_name(src, dst, maxw)
 
 @slider
 cl_ch = floor(cl_link_ch + 0.5);
+cl_status != cl_my_id ? cl_status = cl_my_id;   // an undo / a reload / an old project brings an old value back
+
+@block
+cl_status != cl_my_id ? cl_status = cl_my_id;
 
 @gfx 420 128
 cl_now = time_precise();
@@ -174,7 +185,9 @@ cl_hb = gmem[0];
 cl_hb != cl_last_hb ? ( cl_last_hb = cl_hb; cl_last_t = cl_now; );
 cl_busy = cl_hb > 0 && gmem[1045] != 0;          // the main's name window is open: its loop is blocked, not dead
 cl_alive = cl_hb > 0 && ((cl_now - cl_last_t) < 1.5 || cl_busy);
-cl_st = floor(cl_status + 0.5);
+cl_status != cl_my_id ? cl_status = cl_my_id;
+cl_gs = gmem[8192 + (cl_my_id % 8192)];
+cl_st = cl_gs > 0 ? cl_gs - 1 : 0;
 
 // ---- LINK button: fires on release inside the button after a press inside it
 cl_bw = 96; cl_bh = 34; cl_bx = gfx_w - cl_bw - 14; cl_by = 12;
@@ -217,10 +230,13 @@ cl_rdown = (mouse_cap & 2) && !(cl_hprev & 2) && cl_hin;
 cl_wait ? (
   gmem[35] == cl_my_seq ? (
     cl_wait = 0; cl_msg = gmem[36]; cl_msg_until = cl_now + (cl_msg == 0 ? 2 : 4);
+    cl_link_req = 0;                       // handled: cleared here (bare, no undo entry); the main no longer writes slider3
   ) : gmem[35] > cl_my_seq ? (
     cl_wait = 0; cl_msg = -1;              // a newer press (another marker) superseded this one
+    cl_link_req = 0;
   ) : (cl_now - cl_wait_t) > 2 ? (
     cl_wait = 0; cl_msg = 100; cl_msg_until = cl_now + 4;
+    cl_link_req = 0;
   );
 );
 (cl_msg >= 0 && cl_now > cl_msg_until) ? ( cl_msg = -1; );
