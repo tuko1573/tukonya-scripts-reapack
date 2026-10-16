@@ -33,6 +33,11 @@ L.G = { SEQ = 32, CH = 33, NONCE = 34, ACK_SEQ = 35, ACK_CODE = 36, CTR = 37, ST
 L.G2 = { VER = 1000, USE = 1000, FREE = 1017, NLEN = 1019, NAME = 1100, STRIDE = 128, MAXBYTES = 120,
          RN_SEQ = 1040, RN_CH = 1041, RN_STAMP = 1042, RN_ACK_SEQ = 1043, RN_ACK_CODE = 1044, RN_BUSY = 1045,
          PK_CH = 1046, PK_STAMP = 1047, PK_SEQ = 1048 }
+-- marker status channel (2026-10-16). The marker puts its own instance number (>= ID_MIN, from the counter ID_CTR) into its hidden
+-- slider2 by bare assignment (silent); the main reads it and writes status code + 1 to ST_BASE + number % ST_SLOTS (0 = nothing written).
+-- A script SetParam on a marker slider makes an undo entry "FXパラメータを編集" (REAPER 7.80 MBP, audio on or off) and wipes redo right
+-- after a user Ctrl+Z [M tests/mbp_run/v2/LOG_elundoctl5.txt K0/K3]; the marker's own assignment does not [M LOG_iidgate3.txt].
+L.G3 = { ID_CTR = 1050, ID_MIN = 1001, ST_BASE = 8192, ST_SLOTS = 8192 }
 L.RN = { DONE = 0, CANCELLED = 1, EXPIRED = 2, FAILED = 3, UNCHANGED = 4 }
 L.MAX_AGE = 2.0
 L.NONCE_BASE = 100000

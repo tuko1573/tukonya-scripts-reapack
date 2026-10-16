@@ -252,12 +252,21 @@ function M.new(R)
     return R.TrackFX_GetParamNormalized(tr, a, p)
   end
 
+  --- the plugin's display name (notices to the user), "" when unknown
+  function io.fxname(mid, k)
+    local tr, a = at(mid, k)
+    if not tr or not a then return "" end
+    local _, fx = R.TrackFX_GetFXName(tr, a)
+    return ((fx or ""):gsub("^%w+i?:%s*", ""))
+  end
+
   --- "plugin / param [lane]" for the log (diff records only, never on the hot path)
   function io.pdesc(mid, k, p)
     local tr, a = at(mid, k)
     if not tr or not a then return tostring(k) .. ":" .. tostring(p) end
     local _, fx = R.TrackFX_GetFXName(tr, a)
     if p == "bypass" then return ("%s / bypass"):format(fx or "?") end
+    if p == "state" then return ("%s / saved state (lagging plugin: compared by its state)"):format(fx or "?") end
     local q = p < 0 and (R.TrackFX_GetNumParams(tr, a) + p) or p
     local _, pn = R.TrackFX_GetParamName(tr, a, q)
     local lane = ""
@@ -652,14 +661,17 @@ function M.new(R)
     return cfg(m.tr, m.cont, "renamed_name")
   end
 
-  --- status code into the marker's hidden slider (silent [M P12]); only when it differs
+  --- status code for a marker: gmem slot of the marker's own instance number (read from its hidden slider2, L.G3), only when it
+  --- differs. Never a write into the marker (a script SetParam there makes an undo entry and wipes redo after Ctrl+Z
+  --- [M tests/mbp_run/v2/LOG_elundoctl5.txt K0/K3]). An old marker file (slider2 = a code < ID_MIN) or a number not yet set: no status.
   function io.set_status(rec, code)
     local mk = markers[rec.key]
-    if not mk or dirty[mk.tidx] then return end
-    local v = R.TrackFX_GetParam(mk.tr, mk.addr, 1)
-    if math.floor((v or 0) + 0.5) ~= code then
-      R.TrackFX_SetParam(mk.tr, mk.addr, 1, code)
-      own = { ti = mk.tidx, a = mk.addr, p = 1 }
+    if not mk or dirty[mk.tidx] or not R.gmem_write then return end
+    local id = math.floor((R.TrackFX_GetParam(mk.tr, mk.addr, 1) or 0) + 0.5)
+    if id < L.G3.ID_MIN then return end
+    local slot = L.G3.ST_BASE + id % L.G3.ST_SLOTS
+    if R.gmem_read(slot) ~= code + 1 then
+      R.gmem_write(slot, code + 1)
       io.stats.status_writes = io.stats.status_writes + 1
     end
   end
@@ -780,15 +792,10 @@ function M.new(R)
     return { req = R.TrackFX_GetParam(mk.tr, mk.addr, 2) or 0, open = R.TrackFX_GetOpen(mk.tr, mk.addr) }
   end
 
-  --- reset slider3 to 0 once its request was handled (TrackFX_SetParam on a JSFX slider: silent [M P12])
-  function io.clear_req(key)
-    local mk = markers[key]
-    if not mk or dirty[mk.tidx] or not req_slider(mk) then return end
-    if (R.TrackFX_GetParam(mk.tr, mk.addr, 2) or 0) ~= 0 then
-      R.TrackFX_SetParam(mk.tr, mk.addr, 2, 0)
-      own = { ti = mk.tidx, a = mk.addr, p = 2 }
-    end
-  end
+  --- slider3 (LINK nonce) is no longer reset by the main: a script SetParam on a marker slider makes an undo entry on top of the
+  --- LINK entry [M tests/mbp_run/v2/LOG_elundoctl5.txt K0]. The marker clears it itself (bare assignment, silent) when the answer
+  --- arrives; a stale nonce cannot match a new request (per-press counter, random per session) and link_sources prefers the open window.
+  function io.clear_req(key) end
 
   --- persistent event log (review MUST 9): Data/TUKONYA_ChainLink/link_log.txt, capped (cl_backup.trim_log)
   local log_path
@@ -869,6 +876,17 @@ function M.new(R)
     if not f then io.blog("class file not writable: in memory only"); return end
     f:write(text); f:close()
   end
+  -- lagging plugins learned at runtime (cl_lag; never pruned, never un-learned by the script)
+  function io.lag_load()
+    local f = _G.io.open(dir() .. "/lag_class.txt", "rb")
+    if not f then return nil end
+    local t = f:read("a"); f:close(); return t
+  end
+  function io.lag_save(text)
+    local f = _G.io.open(dir() .. "/lag_class.txt", "wb")
+    if not f then io.blog("lag file not writable: in memory only"); return end
+    f:write(text); f:close()
+  end
   function io.today() return os.date("%Y-%m-%d") end
   function io.blog(s)
     io.log(s)
@@ -897,6 +915,7 @@ function M.new(R)
   end
 
   function io.ask(text, kind)
+    if kind == "ok" then R.ShowMessageBox(text, M.TITLE, 0); return "yes" end      -- a notice: OK only
     local r = R.ShowMessageBox(text, M.TITLE, kind == "yesnocancel" and 3 or 4)
     if r == 6 then return "yes" elseif r == 7 then return "no" elseif r == 2 then return "cancel" end
     return "cancel"

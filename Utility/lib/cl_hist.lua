@@ -16,6 +16,7 @@
 
 local P = require("cl_params")
 local ENV = require("cl_env")
+local LAG = require("cl_lag")
 local H = {}
 
 local NAN = 0 / 0
@@ -46,7 +47,7 @@ H.unpack_at = unpack_at
 
 -- ------------------------------------------------------------------ record (MUST 1)
 --- is the Ch settled enough to be recorded for the current entry? returns ok, reason
-function H.settled(g, ctx)
+function H.settled(g, ctx, io)
   if g.restore then return false, "restore pending" end
   if g.link_lanes then return false, "LINK lanes pending" end
   if not g.slots or not g.agreed_sig then return false, "no slots" end
@@ -71,7 +72,20 @@ function H.settled(g, ctx)
     local nu = math.ceil(#S.meta.list / chunk)
     if nu > 0 and #S.mem >= 2 and (S.swept or 0) - (S.rec_mark or 0) < nu + 1 then return false, "sweep not done" end
     if next(S.pend) or next(S.pend_byp) or next(S.pend_blob) then return false, "held writes" end
-    -- DESIGN_V2 §3 / review MUST 5: records hold no blob data and do not wait for hidden-state commits
+    -- a lagging plugin (cl_lag): its own readbacks are no values, so its saved state IS the record. Every member must hold the
+    -- same state now (read at most every 0.25 s: a state read costs ms); the record keeps that chunk.
+    S.rec_blob = nil
+    if S.class == "vst" and P.lagging(S) and #S.mem >= 2 then
+      if not io then return false, "no state reader" end
+      if (S.rb_next or 0) > ctx.now then return false, "state read pause" end
+      S.rb_next = ctx.now + 0.25
+      local b0 = io.blob(S.mem[1], S.k)
+      if not b0 or b0 == "" then return false, "no state" end
+      if P.needs_ready(S) and LAG.asleep(b0) then return false, "asleep state" end     -- never record a valueless state
+      for i = 2, #S.mem do if not P.same_state(S, io.blob(S.mem[i], S.k), b0) then return false, "state differs" end end
+      S.rec_blob = b0
+    end
+    -- DESIGN_V2 §3 / review MUST 5: records hold no blob data (except a lagging plugin's state) and do not wait for hidden-state commits
     local m0 = S.mem[1]
     if m0 then
       local l0 = S.last[m0]
@@ -97,7 +111,7 @@ end
 function H.record(st, io, ps, g, ctx)
   local h = ps.hist[ctx.cur]
   if not h or h.ch[g.ch] ~= nil then return end
-  local ok = H.settled(g, ctx)
+  local ok = H.settled(g, ctx, io)
   if not ok then return end
   local rec = { members = {}, sig = g.agreed_sig, slots = {}, env = ENV.record(g) }
   for m in pairs(g.linked) do rec.members[m] = true end
@@ -109,7 +123,9 @@ function H.record(st, io, ps, g, ctx)
     local vals = pack(S.meta.list, function(p) if P.synced(S, p) and l0[p] ~= nil then return l0[p] end; return NAN end)
     local pk = prev and prev.slots[k]
     if pk and pk.vals == vals and pk.ident == S.ident then vals = pk.vals end   -- share the older string (memory)
-    rec.slots[k] = { ident = S.ident, list = S.meta.list, vals = vals, byp = S.byp[m0] }
+    local blob = S.rec_blob                                    -- a lagging plugin: the state itself (own params are NaN above)
+    if blob and pk and pk.blob == blob then blob = pk.blob end   -- share the older string (memory)
+    rec.slots[k] = { ident = S.ident, list = S.meta.list, vals = vals, byp = S.byp[m0], blob = blob }
   end
   -- the container block itself, only when the content changed since the last record (shared otherwise): used when an
   -- undo leaves no member carrying the recorded content (a member reverted by REAPER to a pre-sync snapshot while the
@@ -249,9 +265,10 @@ function H.restore_values(st, io, ps, g, ctx, decline)
       -- value on every track) — the record is then the only exact copy. Every recorded value is written to every record
       -- member that differs; a param is skipped only on a member that itself has an active lane or modulation on it now.
       local idx = {}
+      local lag = S.class == "vst" and P.lagging(S)       -- cl_lag: own params are never written from a record (their value is NaN there)
       for i, p in ipairs(rk.list) do
         local v = unpack_at(rk.vals, i)
-        if v == v and S.meta.inlist[p] and not S.frozen[p] and not (p >= 0 and p >= S.n - 3) then
+        if v == v and S.meta.inlist[p] and not S.frozen[p] and not (p >= 0 and p >= S.n - 3) and not (lag and p >= 0) then
           idx[#idx + 1] = { p = p, v = v, tol = S.meta.tol_c[p] or P.TOL_CROSS }
         end
       end
@@ -273,6 +290,9 @@ function H.restore_values(st, io, ps, g, ctx, decline)
         cur[m], diff[m] = c, d
       end
       st.stats.reads = st.stats.reads + #smem * #idx
+      -- a lagging plugin (cl_lag): nothing is restored from the record (2026-10-15, user decision). REAPER's own undo moved some tracks'
+      -- states; cl_blob.step (g.lag_undo, set in cl_core tick) reads every member against the state of the entry we left and spreads the
+      -- one that now differs, as a normal edit. No write, no decline here.
       -- a member carrying the whole slot (within tolerance) lends its hidden state first (SHOULD 4 b)
       local carrier
       for _, m in ipairs(smem) do
@@ -289,7 +309,7 @@ function H.restore_values(st, io, ps, g, ctx, decline)
             for j, e in ipairs(idx) do if not skip[t][e.p] and abs(cur[t][j] - e.v) > e.tol then far = true end end
             if far then decline(g, t, "not in the undo record, values differ") end
           else
-            if carrier and carrier ~= t and S.class == "vst" then
+            if carrier and carrier ~= t and S.class == "vst" and not lag then
               local b = io.blob(carrier, k)
               if b and b ~= "" then
                 io.set_blob(t, k, b); st.stats.blob_writes = st.stats.blob_writes + 1

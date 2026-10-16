@@ -26,6 +26,7 @@
     lane_remove(mid, k, p)  -> bool                                     (0 points + ACT 0)
 --]]
 
+local LAG = require("cl_lag")
 local M = {}
 
 local function log(io, s) if io.log then io.log(s) end end
@@ -462,7 +463,9 @@ function M.restore(st, io, ps, g, mem, ctx, cur)
             if carrier and M.has_line(want) then                 -- the lane-driven value as the carrier has it now
               local k, p = split_key(key)
               local v = io.get(carrier, k, p)
-              if v then io.set(m, k, p, v) end
+              local Sk = g.slots and g.slots[k]
+              -- a lagging plugin's readback is no value (cl_lag): the lane drives it, nothing is copied from a readback
+              if v and not (Sk and type(p) == "number" and p >= 0 and Sk.class == "vst" and Sk.lagset and LAG.is(Sk.lagset, Sk.ident)) then io.set(m, k, p, v) end
             end
           elseif not E.excl[m] then
             E.excl[m] = true; E.last[m] = nil
