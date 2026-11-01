@@ -235,8 +235,16 @@ end
   src_ids / dst_ids: fx_ident per item position (marker included). The target keeps its own marker at its own position
   (clamped), like splice. Returns ops: {op = "delete", pos} / {op = "move", from, to} — 1-based positions in the target's
   item list at the time of that op; `to` is the final position (the adapter converts it to REAPER's pre-move insert
-  position). Matching = the same greedy rule as splice (first unused target item with the same ident). ]]
-function M.native_plan(src_ids, dst_ids, is_marker)
+  position). Matching = the same greedy rule as splice (first unused target item with the same ident).
+  copy = true (fallback when REAPER refuses the track chunk, e.g. Melodyne as take FX [M tests/mbp_run/v2/LOG_takefx.txt]):
+  an item the target lacks becomes {op = "copy", src, to} (src = its 1-based position in the source's item list, marker
+  included; `to` = the final position, a plain insert) instead of nil; the second return value lists the kept items as
+  {to, src} so the caller can bring their state over. A sub-container on either side → nil (matched by ident only). ]]
+function M.native_plan(src_ids, dst_ids, is_marker, copy)
+  if copy then
+    for _, id in ipairs(src_ids) do if id == "__builtin_container" then return nil end end
+    for _, id in ipairs(dst_ids) do if id == "__builtin_container" then return nil end end
+  end
   local pool, dmark_pos = {}, nil
   local cur = {}                                   -- tokens of the target items: { ident, id = unique }
   for i, id in ipairs(dst_ids) do
@@ -246,11 +254,15 @@ function M.native_plan(src_ids, dst_ids, is_marker)
     if not tok.marker then pool[id] = pool[id] or {}; table.insert(pool[id], tok) end
   end
   local want = {}
-  for _, id in ipairs(src_ids) do
+  for si, id in ipairs(src_ids) do
     if not is_marker(id) then
       local p = pool[id]
       local tok = p and table.remove(p, 1)
-      if not tok then return nil end               -- the target lacks this plugin: an add (chunk path)
+      if not tok then
+        if not copy then return nil end            -- the target lacks this plugin: an add (chunk path)
+        tok = { ident = id, copy = si }
+      end
+      tok.src = si
       want[#want + 1] = tok
     end
   end
@@ -268,16 +280,24 @@ function M.native_plan(src_ids, dst_ids, is_marker)
     for _, tok in ipairs(cur) do if tok.marker then mk = tok end end
     table.insert(final, math.min(dmark_pos, #final + 1), mk)
   end
+  local keep = {}
   for i = 1, #final do
-    local j
-    for x = 1, #cur do if cur[x] == final[i] then j = x; break end end
-    if j ~= i then
-      ops[#ops + 1] = { op = "move", from = j, to = i }
-      local tok = table.remove(cur, j)
+    local tok = final[i]
+    if tok.copy then
+      ops[#ops + 1] = { op = "copy", src = tok.copy, to = i }
       table.insert(cur, i, tok)
+    else
+      local j
+      for x = 1, #cur do if cur[x] == tok then j = x; break end end
+      if j ~= i then
+        ops[#ops + 1] = { op = "move", from = j, to = i }
+        table.remove(cur, j)
+        table.insert(cur, i, tok)
+      end
+      if tok.src then keep[#keep + 1] = { to = i, src = tok.src } end
     end
   end
-  return ops
+  return ops, keep
 end
 
 --- REAPER's pre-move insert position (1-based) for a move that must end at `to` [M e3: item 1 → position 4 of 3 = end]

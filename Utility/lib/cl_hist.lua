@@ -79,19 +79,21 @@ function H.settled(g, ctx, io)
       if not io then return false, "no state reader" end
       if (S.rb_next or 0) > ctx.now then return false, "state read pause" end
       S.rb_next = ctx.now + 0.25
-      local b0 = io.blob(S.mem[1], S.k)
+      local um = P.undrifted(S)
+      local b0 = io.blob(um[1], S.k)
       if not b0 or b0 == "" then return false, "no state" end
       if P.needs_ready(S) and LAG.asleep(b0) then return false, "asleep state" end     -- never record a valueless state
-      for i = 2, #S.mem do if not P.same_state(S, io.blob(S.mem[i], S.k), b0) then return false, "state differs" end end
+      for i = 2, #um do if not P.same_state(S, io.blob(um[i], S.k), b0) then return false, "state differs" end end
       S.rec_blob = b0
     end
     -- DESIGN_V2 §3 / review MUST 5: records hold no blob data (except a lagging plugin's state) and do not wait for hidden-state commits
-    local m0 = S.mem[1]
+    local um = P.undrifted(S)                                     -- a drifted member (source gate) does not stop the record
+    local m0 = um[1]
     if m0 then
       local l0 = S.last[m0]
       if not l0 then return false, "no readback" end
-      for i = 2, #S.mem do
-        local m = S.mem[i]
+      for i = 2, #um do
+        local m = um[i]
         local lm = S.last[m]
         if not lm then return false, "no readback" end
         if S.byp[m] ~= S.byp[m0] then return false, "bypass differs" end
@@ -118,9 +120,9 @@ function H.record(st, io, ps, g, ctx)
   local prev = g.last_rec
   for _, k in ipairs(g.order) do
     local S = g.slots[k]
-    local m0 = S.mem[1]
-    local l0 = S.last[m0]
-    local vals = pack(S.meta.list, function(p) if P.synced(S, p) and l0[p] ~= nil then return l0[p] end; return NAN end)
+    local m0 = P.undrifted(S)[1]
+    local l0 = m0 and S.last[m0]                                -- nil: no member left in this slot (all timed out)
+    local vals = pack(S.meta.list, function(p) if l0 and P.synced(S, p) and l0[p] ~= nil then return l0[p] end; return NAN end)
     local pk = prev and prev.slots[k]
     if pk and pk.vals == vals and pk.ident == S.ident then vals = pk.vals end   -- share the older string (memory)
     local blob = S.rec_blob                                    -- a lagging plugin: the state itself (own params are NaN above)
@@ -326,6 +328,7 @@ function H.restore_values(st, io, ps, g, ctx, decline)
         end
       end
       S.last, S.hot, S.agreed = {}, {}, {}
+      if S.drift then for m in pairs(S.drift) do S.drift[m] = nil end end     -- the record was written to every member
       for _, e in ipairs(idx) do S.agreed[e.p] = e.v end
       -- bypass
       if rk.byp ~= nil then

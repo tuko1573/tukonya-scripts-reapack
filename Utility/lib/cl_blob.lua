@@ -107,6 +107,17 @@ end
 local function commit(st, io, ps, g, S, mem, m, ctx, trig)
   local B = S.blob[m]
   local blob = B.last
+  -- source gate (2026-11-01): only the source slot may spread. An edit that began while this member was the source keeps its right
+  -- until it is committed (B.src_edit, set when the pending edit was first seen); any other member's commit is dropped and
+  -- remembered as drift (its new state is its own baseline now, so it is not detected again).
+  if not (B.src_edit or P.can_source(g, S, m)) then
+    P.drift_mark(S, m, "state")
+    blog(io, ("drift | %s | Ch %d slot %s: %s changed without being the source (%s): not spread, remembered as 'this track differs'"):format(S.ident, g.ch, tostring(S.k), tracks_of(ctx, { m }), trig))
+    B.agreed = blob; B.pending = false; B.pressed = false; B.t_up = nil; B.recheck = nil; B.src_edit = nil
+    return
+  end
+  B.src_edit = nil
+  P.drift_clear(S, m, "state")                                  -- the source's own state is the group's now
   local js = B.pressed and trig == "js" and not multi(S, m, ctx)
   -- a held inbound write over m is discarded: m's own newer commit wins (R3); the loser is told on its marker
   if B.held then
@@ -335,6 +346,7 @@ function M.step(st, io, ps, g, S, mem, ctx)
         if not P.same_state(S, r, B.last) then B.t_change = now end
         B.last = r
         B.pending = (B.quiet_until == nil) and not P.same_state(S, r, B.agreed)
+        if B.pending then if B.src_edit == nil then B.src_edit = P.can_source(g, S, m) end else B.src_edit = nil end
         if nr and LAG.asleep(r) then B.was_asleep = true end
         if nr and B.pending then
           local stable = B.t_change and now - B.t_change >= P.SAMPLE_GAP

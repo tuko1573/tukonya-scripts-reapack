@@ -214,6 +214,27 @@
       </metadata>
     </reapack>
     <reapack name="TUKONYA_Container Link.lua" type="script" desc="TUKONYA Container Link">
+      <version name="1.2.0" author="tuko" time="2026-11-01T11:27:12Z">
+        <changelog><![CDATA[選択しているトラックが親になった。選択していないトラックで触った分はほかのトラックへ広がらず、そのトラックの目印に「このトラックだけ設定が違います」、マウスの近くにも表示が出て、プラグインの画面を閉じると親の値に戻る。LINK ボタンは、相手のコンテナのプラグインを元のトラックからコピーし直して立ち上げ直すようにした（REAPER の FX のコピーと同じで、見えない設定まで完全にそろう。重いプラグインはそのとき 1 秒ほど止まる）。合流のときの「設定が違います」の確認窓で「はい」「いいえ」を選んだときも同じ立ち上げ直しで合わせる。開いている FabFilter Pro-Q 4 の画面の裏で帯域を消すと、次のクリックで REAPER ごと落ちることがあったのを直した。]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA_Container%20Link.lua</source>
+        <source main="main" file="TUKONYA_Container Link (Install Startup).lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA_Container%20Link%20%28Install%20Startup%29.lua</source>
+        <source main="main" file="TUKONYA_Container Link (Uninstall Startup).lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA_Container%20Link%20%28Uninstall%20Startup%29.lua</source>
+        <source main="main" file="TUKONYA_Container Link - LINK (selected track).lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA_Container%20Link%20-%20LINK%20%28selected%20track%29.lua</source>
+        <source type="effect" file="TUKONYA Container Link.jsfx">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA%20Container%20Link.jsfx</source>
+        <source file="lib/cl_backup.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/cl_backup.lua</source>
+        <source file="lib/cl_blob.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/cl_blob.lua</source>
+        <source file="lib/cl_blobclass.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/cl_blobclass.lua</source>
+        <source file="lib/cl_core.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/cl_core.lua</source>
+        <source file="lib/cl_env.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/cl_env.lua</source>
+        <source file="lib/cl_hist.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/cl_hist.lua</source>
+        <source file="lib/cl_lag.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/cl_lag.lua</source>
+        <source file="lib/cl_link.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/cl_link.lua</source>
+        <source file="lib/cl_params.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/cl_params.lua</source>
+        <source file="lib/cl_reaper.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/cl_reaper.lua</source>
+        <source file="lib/cl_startup.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/cl_startup.lua</source>
+        <source file="lib/cl_struct.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/cl_struct.lua</source>
+        <source file="README_ContainerLink.md">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/README_ContainerLink.md</source>
+      </version>
       <version name="1.1.1" author="tuko" time="2026-10-16T05:09:22Z">
         <changelog><![CDATA[つまみの読み値が本当の設定に追いつかないプラグイン（TR5 EQ-81、EL REY2 など）は、設定をまるごと写すようにした。これまでは起動のたびに食い違いの確認窓が出たり、LINK や Cmd+Z で他のトラックの値が 0 や最小値になることがあった。EL REY2 は読み込みが終わってから写す。そのため付いてくるのは手を離して 0.3〜0.5 秒ほど後になる。Cmd+Z／Cmd+Shift+Z も全員そろって戻る・進む。ただし EL REY2 の窓を開いたまま Cmd+Z を押すと、そのあとの Cmd+Shift+Z が効かない（EL REY2 自身の性質）。再生中に写すと、付いてくる側の EL REY2 が一瞬（約 0.06 秒）途切れる。lib/cl_lag.lua を追加。]]></changelog>
         <source main="main">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA_Container%20Link.lua</source>
