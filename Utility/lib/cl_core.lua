@@ -43,7 +43,8 @@ local M = {}
 
 M.SYNC_DESC = "Container Link: 並びをそろえる"   -- the undo entry of a native structure sync (chained to the user's entry)
 M.STATUS = { OK = 0, MISMATCH = 1, DUP = 2, OUTSIDE = 3, NESTED = 4, DEBOUNCE = 6, ASK = 7, LOADING = 8, DECLINED = 9,
-             LINK_HOLD = 10, LINKED = 11, LINK_NOTE = 12, BLOB_LOST = 13, LINK_HOLD_PLAY = 14 }   -- 10–12 LINK, 13 hidden-state conflict lost (v2)
+             LINK_HOLD = 10, LINKED = 11, LINK_NOTE = 12, BLOB_LOST = 13, LINK_HOLD_PLAY = 14,
+             DRIFT = 15 }   -- 10–12 LINK, 13 hidden-state conflict lost (v2), 15 this track differs from the group (source gate; LINK evens it)
 local ST = M.STATUS
 
 M.DEFAULTS = {
@@ -104,7 +105,7 @@ function M.new(cfg)
 end
 
 local function new_ps(now)
-  return { cand = {}, eff = {}, info = {}, groups = {}, jobs = {}, declined = {}, first = true, hist = {}, confirm = {},
+  return { cand = {}, eff = {}, info = {}, groups = {}, jobs = {}, join_links = {}, declined = {}, first = true, hist = {}, confirm = {},
            was_playing = false, settle = 0, rr = 0, dyn_rr = 0, t_load = now, link_hold = {}, flash = {} }
 end
 
@@ -142,6 +143,7 @@ local function leave(ps, mid)
   if not g then return end
   remove_from(g.members, mid)
   g.linked[mid] = nil; g.asking[mid] = nil; g.state[mid] = nil; g.adopt[mid] = nil; g.post_align[mid] = nil
+  if g.pa_blob then g.pa_blob[mid] = nil end
   P.forget(g, mid)
   drop_jobs(ps, function(j) return j.mid == mid or (j.kind == "form" and j.ch == ch) end)
 end
@@ -239,7 +241,7 @@ local function tname(ps, mid) local r = ps.info[mid]; return r and (r.tname ~= "
 -- ------------------------------------------------------------------ structure writes (P2)
 local function decline(ps, io, g, m, why)
   if g.linked[m] then g.linked[m] = nil; P.forget(g, m) end
-  g.asking[m] = nil; g.adopt[m] = nil; g.post_align[m] = nil
+  g.asking[m] = nil; g.adopt[m] = nil; g.post_align[m] = nil; if g.pa_blob then g.pa_blob[m] = nil end
   ps.declined[m .. "|" .. g.ch] = true
   log(io, ("Ch %d: %s declined (%s)"):format(g.ch, m, why))
 end
@@ -251,22 +253,38 @@ local function struct_allowed(cfg, ctx, old, new)
   return true
 end
 
+--- a container that could not be replaced (REAPER refused the track and the native fallback did not take either): one OK box
+--- for the user, naming every such track of this tick's writes (a queued, not yet shown box gets the next name added)
+local function struct_fail_notice(ps, g, m)
+  local job
+  for _, j in ipairs(ps.jobs) do if j.kind == "notice" and j.fail_names then job = j end end
+  if not job then job = { kind = "notice", ch = 0, fail_names = {}, fail_seen = {} }; ps.jobs[#ps.jobs + 1] = job end
+  local n = ("・「%s」（Ch %d）"):format(tname(ps, m), g.ch)
+  if not job.fail_seen[n] then job.fail_seen[n] = true; job.fail_names[#job.fail_names + 1] = n end
+  job.text = "次のトラックのコンテナを、ほかのトラックと同じ中身に書き換えられませんでした。\n\n" .. table.concat(job.fail_names, "\n") ..
+    "\n\nこのトラックは連動から外れています。そろえたい側のトラックで LINK を押してください。それでもそろわなければ、ほかのトラックからコンテナを手でコピーしてください。"
+end
+
 --- copy src's container block onto every target (each target keeps its own marker and FXIDs; backup first).
 --- align = true: verify every value against src once the targets' slots are ready (MUST 6)
 local function write_struct(st, io, ps, g, ctx, src, targets, why, align)
   local from_rec = type(src) == "table"            -- a block stored in an undo record (cl_hist)
   for _, t in ipairs(targets) do
-    local ok, info
+    local ok, info, nat
     local sig = from_rec and src.sig or (ctx.res[src] and ctx.res[src].sig)
-    if from_rec then ok, info = io.write_block(src, t, why) else ok, info = io.copy_struct(src, t, why) end
+    if from_rec then ok, info = io.write_block(src, t, why) else ok, info, nat = io.copy_struct(src, t, why) end
     st.stats.struct_writes = st.stats.struct_writes + 1
     log(io, ("Ch %d: structure %s -> %s (%s): %s"):format(g.ch, from_rec and "record" or src, t, why, tostring(info)))
     if ok then
       g.wrote[t] = { t = ctx.now, sig = sig }          -- verified on the next tick (MUST 4: a write that did not take)
       g.pa_t[t] = ctx.now
       if align and not from_rec then g.post_align[t] = src end
+      g.pa_blob = g.pa_blob or {}
+      g.pa_blob[t] = nat and "values" or nil   -- written natively (refused chunk): differing values written (cl_params.align_slot)
     else
       decline(ps, io, g, t, "structure write failed: " .. tostring(info))
+      if io.event then io.event(("Ch %d: structure write to %s failed (%s): %s"):format(g.ch, t, why, tostring(info))) end
+      struct_fail_notice(ps, g, t)
     end
   end
   g.slots = nil; g.build_from = (not from_rec) and src or nil; g.rebuilt = true
@@ -296,7 +314,10 @@ local function still(ps, g, ctx, m, sig)
   return r ~= nil and ps.eff[m] == g.ch and r.sig == sig
 end
 local function align_all(st, io, g, src, dst, ctx)
-  for _, k in ipairs(g.order) do P.align_slot(st, io, g, g.slots[k], src, dst, ctx, true) end
+  -- written natively just before (refused chunk, e.g. a join): the state is there, the values are written (cl_params.align_slot)
+  local wb = (g.pa_blob and g.pa_blob[dst]) or true
+  if g.pa_blob and not g.post_align[dst] then g.pa_blob[dst] = nil end
+  for _, k in ipairs(g.order) do P.align_slot(st, io, g, g.slots[k], src, dst, ctx, wb) end
   st.stats.align = st.stats.align + 1
 end
 
@@ -374,15 +395,15 @@ local function run_job(st, io, ps, job, ctx)
       "キャンセル: つながない"):format(tname(ps, j), g.ch, g.ch, g.ch), "yesnocancel")
     st.stats.dialogs = st.stats.dialogs + 1
     g.asking[j] = nil
+    -- (2026-11-01) the answer is carried out like LINK: the plugins are re-created from the source (REAPER's own FX copy), never
+    -- patched value by value — writing "Band Used = 0" into an open Pro-Q 4 removed a band under its window and the next click
+    -- crashed REAPER (Studio 19:38). j stays "asking" until the reload ran (link_step, next tick).
     if a == "yes" then
-      if in_block(st, io, ps, desc, g.ch, { j }, function() align_all(st, io, g, ref, j, ctx) end) then
-        if P.diff(st, io, g, ref, j) > 0 then log_diff(st, io, ps, g, ref, j, "still different right after aligning (join)") end
-        link(st, io, g, j)
-      else ps.declined[j .. "|" .. g.ch] = true end
+      g.asking[j] = true
+      ps.join_links[#ps.join_links + 1] = { ch = g.ch, src = ref, only = { j }, desc = desc }
     elseif a == "no" then
-      if in_block(st, io, ps, desc, g.ch, { j }, function()
-        for _, m in ipairs(g.members) do if g.linked[m] then align_all(st, io, g, j, m, ctx) end end
-      end) then link(st, io, g, j) else ps.declined[j .. "|" .. g.ch] = true end
+      g.asking[j] = true
+      ps.join_links[#ps.join_links + 1] = { ch = g.ch, src = j, join = { j }, desc = desc }
     else
       ps.declined[j .. "|" .. g.ch] = true
       log(io, ("Ch %d: %s declined"):format(g.ch, j))
@@ -404,13 +425,9 @@ local function run_job(st, io, ps, job, ctx)
       "はい: 全部を「%s」の設定にそろえる\nいいえ: 設定が違うトラックはつながない"):format(g.ch, table.concat(names, "、"), tname(ps, ref)), "yesno")
     st.stats.dialogs = st.stats.dialogs + 1
     for _, m in ipairs(list) do g.asking[m] = nil end
-    if a == "yes" then
-      if in_block(st, io, ps, desc, g.ch, list, function() for _, m in ipairs(list) do align_all(st, io, g, ref, m, ctx) end end) then
-        for _, m in ipairs(list) do
-          if P.diff(st, io, g, ref, m) > 0 then log_diff(st, io, ps, g, ref, m, "still different right after aligning (form)") end
-          link(st, io, g, m)
-        end
-      else for _, m in ipairs(list) do ps.declined[m .. "|" .. g.ch] = true end end
+    if a == "yes" then                                -- (2026-11-01) re-created from the source like LINK, see the join answer
+      for _, m in ipairs(list) do g.asking[m] = true end
+      ps.join_links[#ps.join_links + 1] = { ch = g.ch, src = ref, only = list, desc = desc }
     else
       for _, m in ipairs(list) do ps.declined[m .. "|" .. g.ch] = true end
     end
@@ -571,13 +588,18 @@ local function verify_step(st, io, ps, g, ctx)
         end
       end
       local d = P.diff_detail(st, io, g, src, t, 6)
-      for _, e in ipairs(d) do diffs[#diffs + 1] = { t = t, e = e } end
+      for _, e in ipairs(d) do
+        -- LINK re-creates every plugin from the source (REAPER's own copy carries the state): a plugin's own readbacks may stay
+        -- stale after that (Pro-Q 3, LED Compressor [M LOG_lr_ledcopy: render bit-identical, readback 1.0 vs 0.9]), so they are
+        -- not compared; the saved state of the lagging lane, bypass and the REAPER-side params (p < 0) are
+        if not (type(e.p) == "number" and e.p >= 0) then diffs[#diffs + 1] = { t = t, e = e } end
+      end
     end
   end
   if #diffs == 0 and not pending then
     g.verify = nil
     log(io, ("LINK Ch %d verified: every slot of %d target(s) equals the source"):format(g.ch, #V.targets))
-    if io.event then io.event(("LINK Ch %d verified: all targets equal the source"):format(g.ch)) end
+    if io.event then io.event(("LINK Ch %d verified: all %d linked target(s) equal the source"):format(g.ch, #V.targets)) end
     return
   end
   if now < V.deadline then return end
@@ -802,6 +824,8 @@ local function process_group(st, io, ps, g, ctx, settling)
   end
   member_states(ps, g, ctx)
   -- 6. sync facets per slot
+  P.update_source(g, ctx)                                  -- source gate: the last focused slot with a showing window
+  if not settling and g.slots then P.flush_pend(st, io, g, ctx) end   -- unselected changes held while their window showed (2026-11-01 "A")
   for _, k in ipairs(g.order) do
     local S = g.slots[k]
     local mem = P.slot_members(g, S)
@@ -815,7 +839,8 @@ local function process_group(st, io, ps, g, ctx, settling)
         local pa = g.pa_done[t] or {}
         g.pa_done[t] = pa
         if not pa[k] and g.linked[t] and g.linked[src] and S.rd[t] and S.rd[t].ok and S.rd[src] and S.rd[src].ok then
-          if P.align_slot(st, io, g, S, src, t, ctx, false) ~= false then pa[k] = true end    -- false: the source state is not ready, retried
+          local wb = g.pa_blob and g.pa_blob[t] or false
+          if P.align_slot(st, io, g, S, src, t, ctx, wb) ~= false then pa[k] = true end    -- false: the source state is not ready, retried
         end
       end
       if ctx.flush or next(S.pend) or next(S.pend_byp) or next(S.pend_blob) then P.flush(st, io, g, S, mem, ctx) end
@@ -859,7 +884,9 @@ local function process_group(st, io, ps, g, ctx, settling)
   for t, src in pairs(g.post_align) do
     local pa, all = g.pa_done[t] or {}, true
     for _, k in ipairs(g.order) do if not pa[k] then all = false end end
-    if all or not g.linked[t] or not g.linked[src] or now - (g.pa_t[t] or now) > 10 then g.post_align[t] = nil; g.pa_done[t] = nil; g.pa_t[t] = nil end
+    if all or not g.linked[t] or not g.linked[src] or now - (g.pa_t[t] or now) > 10 then
+      g.post_align[t] = nil; g.pa_done[t] = nil; g.pa_t[t] = nil; if g.pa_blob then g.pa_blob[t] = nil end
+    end
   end
   -- 7. joiners whose FX order differs: a marker-only container takes the group's content silently, others are asked
   if ref and not ctx.wrote_struct then
@@ -1125,6 +1152,15 @@ end
 --- LINK: the source's container becomes the content of every other container on its Ch, all Chs in one named undo
 --- block. Order (DESIGN_V2 §3/§4): container blocks (backup first) → every listed param of every slot → bypass
 --- (container + inner) → lanes. Returns ok (false = aborted inside the block), number of Chs linked.
+--- a join answer whose reload could not run (source gone / not ready): the joiners are left unlinked (declined), not stuck "asking"
+local function join_link_failed(ps, io, e, why)
+  local g = ps.groups[e.ch]
+  if not g then return end
+  for _, m in ipairs(e.only or e.join or {}) do
+    if not g.linked[m] then decline(ps, io, g, m, "join reload: " .. why) end
+  end
+end
+
 local function run_link(st, io, ps, ctx, entries, rr)
   local cfg, now = st.cfg, ctx.now
   local list, chs, items = {}, {}, {}
@@ -1132,22 +1168,26 @@ local function run_link(st, io, ps, ctx, entries, rr)
     local g = ps.groups[e.ch]
     if g and ps.eff[e.src] == e.ch and ctx.res[e.src] then
       local targets, decl = {}, {}
+      local only
+      if e.only then only = {}; for _, m in ipairs(e.only) do only[m] = true end end   -- a join answer: just these members
       for _, m in ipairs(g.members) do
-        if m ~= e.src and ctx.res[m] then targets[#targets + 1] = m end
+        if m ~= e.src and ctx.res[m] and (not only or only[m]) then targets[#targets + 1] = m end
         if not g.linked[m] then decl[#decl + 1] = m end      -- Ctrl+Z below the LINK: unlinked before → declined again
       end
       if #targets > 0 then
-        list[#list + 1] = { e = e, g = g, targets = targets, sig = ctx.res[e.src].sig, ok = {}, ready = {} }
+        list[#list + 1] = { e = e, g = g, targets = targets, sig = ctx.res[e.src].sig, ok = {}, ready = {}, nat = {}, pre = {}, sw = {} }
         chs[#chs + 1] = e.ch
         items[#items + 1] = { ch = e.ch, decl = decl }
-      end
+      else join_link_failed(ps, io, e, "no target left") end
     else
       ev(io, ("LINK Ch %d: source %s is no longer a member, dropped"):format(e.ch, tostring(e.src)))
+      join_link_failed(ps, io, e, "source gone")
     end
   end
   if #list == 0 then return true, 0 end
   table.sort(chs)
   local desc = L.desc(chs)
+  if #list == 1 and list[1].e.desc then desc = list[1].e.desc end    -- a join answer keeps its own undo name
   -- cfg.link_undo = false (fallback, user decision 2026-10-02): LINK is undo-silent — no named entry, the history record of
   -- the current entry is re-taken from the LINKed state (a later Ctrl+Z of other actions keeps the members agreeing)
   local runner = in_block
@@ -1163,15 +1203,18 @@ local function run_link(st, io, ps, ctx, entries, rr)
     --    same-ident items keep their instance [M P0-1])
     for _, x in ipairs(list) do
       for _, t in ipairs(x.targets) do
-        local wok, info = io.copy_struct(x.e.src, t, "LINK")
+        local wok, info, nat
+        if io.link_struct then wok, info = io.link_struct(x.e.src, t, "LINK") else wok, info, nat = io.copy_struct(x.e.src, t, "LINK") end
         st.stats.struct_writes = st.stats.struct_writes + 1
         log(io, ("Ch %d: LINK structure %s -> %s: %s"):format(x.g.ch, x.e.src, t, tostring(info)))
-        if wok then x.ok[#x.ok + 1] = t; x.g.wrote[t] = { t = now, sig = x.sig }
-        else ev(io, ("LINK Ch %d: block write to %s failed: %s"):format(x.g.ch, t, tostring(info))) end
+        if wok then x.ok[#x.ok + 1] = t; x.g.wrote[t] = { t = now, sig = x.sig }; x.nat[t] = nat or nil
+        else ev(io, ("LINK Ch %d: block write to %s failed: %s"):format(x.g.ch, t, tostring(info))); struct_fail_notice(ps, x.g, t) end
       end
     end
     rr.recs = rescan(io, ps, ctx)
-    -- 2. every listed param of every slot with the source's readback (a block alone is lossy for some plugins, e.g. LED)
+    -- 2. (LINK reload, 2026-11-01) the targets hold fresh copies of the source's plugins: nothing is patched. No readback is written, no lagging /
+    --    blob-class lookup. The source's values are the group's agreed ones; each target slot opens a readiness window and its first
+    --    readbacks / state become its baseline (S.last / blob agreed taken at the first read).
     for _, x in ipairs(list) do
       local g, src = x.g, x.e.src
       g.agreed_sig = x.sig
@@ -1189,45 +1232,22 @@ local function run_link(st, io, ps, ctx, entries, rr)
       for _, k in ipairs(g.order) do
         local S = g.slots[k]
         if S.class == "vst" then
-          -- the source's (pending) state travels in its block: its agreed blob = now; targets got a whole-state write
           local b = io.blob(src, k)
           local Bs = S.blob[src] or {}
           S.blob[src] = Bs
           if b and b ~= "" then Bs.agreed, Bs.last = b, b end
           Bs.pending, Bs.held = false, nil
           S.deferred, S.defer_until = nil, nil
-          if b and b ~= "" then for _, t in ipairs(x.ready) do P.mark_written(S, t, b, now, cfg) end end
         end
         local ls = {}
         for _, p in ipairs(S.meta.list) do if P.synced(S, p) then ls[p] = io.get(src, k, p) end end
         S.last[src] = ls
         for p, v in pairs(ls) do S.agreed[p] = v end
-        local bsrc = S.class == "vst" and io.blob(src, k) or nil
         for _, t in ipairs(x.ready) do
-          local lt = {}
-          local same_n = ctx.res[t].slots[k] and ctx.res[t].slots[k].n == ctx.res[src].slots[k].n
-          -- the block carried the state byte for byte: the plugin's own params are already the source's in sound. Some
-          -- plugins keep showing defaults after a load (TR5 EQ-81 [M tests/probes/RESULTS_TR5_GAIN.md]), so writing the
-          -- source's readbacks here would put those defaults into the target (2026-10-10). A lossy block (LED) differs → written.
-          local same_state = bsrc and bsrc ~= "" and P.same_state(S, io.blob(t, k), bsrc)
-          -- a lagging plugin (cl_lag) carries its settings in the block only: if the block did not deliver the state, write it
-          if bsrc and bsrc ~= "" and not same_state and P.lagging(S) then
-            if P.write_state(st, io, S, t, bsrc) then P.mark_written(S, t, bsrc, now, cfg) end
-          end
-          for _, p in ipairs(S.meta.list) do
-            local v = ls[p]
-            if v ~= nil then
-              if ctx.held[t] or not same_n then lt[p] = io.get(t, k, p); S.pend[t] = ctx.held[t] or nil
-              elseif same_state and p >= 0 then
-                lt[p] = io.get(t, k, p)
-                if math.abs(lt[p] - v) > P.LAG_MIN_DIFF then P.lag_evidence(st, io, S, "LINK: same saved state, readbacks differ", now) end
-              elseif p < 0 and math.abs((io.get(t, k, p) or v + 1) - v) <= 1e-9 then lt[p] = v        -- an equal Wet/Delta is not written (it can make REAPER add an undo entry)
-              else lt[p] = io.set(t, k, p, v); st.stats.writes = st.stats.writes + 1 end
-            elseif p >= 0 and P.scannable(S, p) then lt[p] = io.get(t, k, p)     -- lagging: baseline for the edit signal only
-            end
-          end
-          if not same_n then log(io, ("Ch %d slot %s: LINK skipped values on %s (param count differs)"):format(g.ch, tostring(k), t)) end
-          S.last[t] = lt
+          S.last[t] = {}                              -- baseline = the new instance's first readbacks
+          S.blob[t] = {}                              -- ... and its first state
+          S.pend[t], S.pend_byp[t], S.pend_blob[t] = nil, nil, nil
+          P.event(S, t, now, cfg)                     -- readiness window: the slot waits until the new instance is still
         end
       end
     end
@@ -1260,11 +1280,24 @@ local function run_link(st, io, ps, ctx, entries, rr)
     local g, src = x.g, x.e.src
     local rdy = {}
     for _, t in ipairs(x.ready) do rdy[t] = true end
+    if x.e.only then
+      -- a join answer "take the Ch's settings": only the joiners were re-created; the linked members stay as they are
+      for _, m in ipairs(x.targets) do
+        ps.declined[m .. "|" .. g.ch] = nil
+        g.asking[m], g.adopt[m], g.recheck[m] = nil, nil, nil
+        g.post_align[m], g.pa_done[m], g.pa_t[m] = nil, nil, nil
+        if g.pa_blob then g.pa_blob[m] = nil end
+        if rdy[m] then g.linked[m] = true
+        else decline(ps, io, g, m, "join: the block write did not take") end
+        if g.dst then for _, d in pairs(g.dst) do d[m] = nil end end
+      end
+      g.linked[src] = true
+    else
     for _, m in ipairs(g.members) do ps.declined[m .. "|" .. g.ch] = nil end
     g.linked = { [src] = true }
     g.asking, g.adopt, g.recheck = {}, {}, {}
     -- per-member bookkeeping from before the LINK must not survive it (a stale post_align[src] would rewrite the source)
-    g.post_align, g.pa_done, g.pa_t = {}, {}, {}
+    g.post_align, g.pa_done, g.pa_t, g.pa_blob = {}, {}, {}, {}
     local wr = {}
     for t in pairs(rdy) do wr[t] = g.wrote[t] end
     g.wrote = wr
@@ -1274,9 +1307,11 @@ local function run_link(st, io, ps, ctx, entries, rr)
       if m ~= src then
         if rdy[m] then
           g.linked[m] = true
-          g.post_align[m] = src; g.pa_t[m] = now; g.pa_done[m] = nil   -- verified again once ready (Waves async state)
+          -- (no post-align: LINK does not patch the new instances; verify_step only compares)
         else decline(ps, io, g, m, "LINK: the block write did not take") end
       end
+    end
+    P.clear_drift(g)                                       -- LINK: every member is the group's again
     end
     if not g.slots then g.build_from = src end
     rec_mark_all(g)
@@ -1284,7 +1319,7 @@ local function run_link(st, io, ps, ctx, entries, rr)
     -- "overwrite, then verify": checked once the targets are ready (verify_step), reported if anything still differs
     local vt = {}
     for _, t in ipairs(x.ready) do if g.linked[t] then vt[#vt + 1] = t end end
-    g.verify = #vt > 0 and { src = src, targets = vt, t0 = now, deadline = now + cfg.verify_wait, cur0 = ctx.cur } or nil
+    g.verify = #vt > 0 and { src = src, targets = vt, t0 = now, deadline = now + cfg.verify_wait, cur0 = ctx.cur, sw = x.sw } or nil
     for _, m in ipairs(g.members) do ps.flash[m] = { code = ST.LINKED, untl = now + cfg.link_flash } end
     for _, m in ipairs(x.e.notes or {}) do ps.flash[m] = { code = ST.LINK_NOTE, untl = now + cfg.link_note } end
     st.stats.links = (st.stats.links or 0) + 1
@@ -1340,6 +1375,12 @@ local function link_step(st, io, ps, ctx, rr)
     ps.link_hold = {}
     ev(io, ("LINK: %d held request(s) executed after the transport stopped"):format(#held))
   end
+  -- join answers (run_job): carried out as a LINK of those members (2026-11-01)
+  if #ps.join_links > 0 then
+    for _, e in ipairs(ps.join_links) do run[#run + 1] = e end
+    ev(io, ("LINK: %d join answer(s) carried out by re-creating the plugins"):format(#ps.join_links))
+    ps.join_links = {}
+  end
   -- Nebula family (EL REY2): LINK copies the source's plugin state into every target (the container block carries it), so a source
   -- whose state is asleep (window never opened) / still loading is not copied. The request waits (link_ready_wait), then it is
   -- refused: nothing is written, one notice says which plugin to open. (A request that waits is ack'ed when it ends.)
@@ -1388,6 +1429,7 @@ local function link_step(st, io, ps, ctx, rr)
         if req.via == "gmem" then gm = true end
         if io.link_ack then io.link_ack(req, L.CODE.FAILED, req.via == "gmem" and L.TEXT[L.CODE.FAILED] or text) end
       end
+      for _, e in ipairs(run) do if e.only or e.join then join_link_failed(ps, io, e, "source not ready"); gm = true end end
       if gm then ps.jobs[#ps.jobs + 1] = { kind = "notice", ch = 0, text = text } end
       return
     end
@@ -1878,6 +1920,8 @@ function M.tick(st, io)
 
   tp = prof(st, "sweep", tp, clock())
   -- 6. marker status (written only on change by io; never to a held track while playing)
+  ps.drift_tip = ps.drift_tip or {}
+  if io.tip_tick then io.tip_tick() end
   for _, r in ipairs(recs) do
     if r.issue ~= "offline" then
       local code = ST.OK
@@ -1888,6 +1932,16 @@ function M.tick(st, io)
         local ch = ps.eff[r.mid]
         if ch == nil then code = ST.DEBOUNCE
         else code = (ps.groups[ch] and ps.groups[ch].state[r.mid]) or ST.LOADING end
+        if code == ST.OK and ps.groups[ch] and P.drifted(ps.groups[ch], r.mid) then code = ST.DRIFT end
+        -- the marker is usually closed while another plugin is edited: a new difference that appears while this container's
+        -- window shows (the user is editing an unselected track) is also said next to the mouse (2026-11-01, the user's idea)
+        if ch and ps.groups[ch] then
+          local dn = P.drift_count(ps.groups[ch], r.mid) + P.push_count(ps.groups[ch], r.mid)
+          if dn > (ps.drift_tip[r.mid] or 0) and io.tip and io.showing and io.showing(r.mid) then
+            io.tip("このトラックは選択されていないため、編集がほかのトラックに反映されません（トラックを選んでから触るか、LINK でそろえます）")
+          end
+          ps.drift_tip[r.mid] = dn > 0 and dn or nil   -- (drifts + pushed-back knobs)
+        end
         local fl = ps.flash[r.mid]
         if ch and ps.link_hold[ch] and ps.link_hold[ch].src == r.mid then code = (ctx.recording or not cfg.link_hold_while_playing) and ST.LINK_HOLD or ST.LINK_HOLD_PLAY
         elseif fl then if now < fl.untl then code = fl.code else ps.flash[r.mid] = nil end end

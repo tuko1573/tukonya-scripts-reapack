@@ -83,7 +83,8 @@ M.SEED = {
 -- comparison therefore goes through M.same / M.norm (cl_params P.same_state): the state is base64-decoded and these fields
 -- are cut out before comparing. A normalised chunk is NEVER written anywhere, only compared and logged.
 -- Data-driven: one row per plugin family; `family` is a Lua pattern on the plugin file name (M.base), `pats` are Lua
--- patterns removed from the decoded bytes (no "%" -captures needed).
+-- patterns removed from the decoded bytes (no "%" -captures needed). For `pats` rows the size fields of the state header are
+-- compared as "len - value" (size_tokens, below), because a cut that changes the length changes them too.
 M.MASKS = {
   { family = "^TR5 ", why = "editor GUI scale", pats = { "<GuiScale[^>]*/>" } },
   -- Nebula engine (Acustica Acqua: EL REY2, 2026-10-15): every instance has its own uuid="<32 hex>" in <nuwCustomChunkTreeData .../>, and
@@ -108,8 +109,40 @@ local function extract_nebula(dec)
   el = el:gsub("%s+", " ")          -- the plugin re-wraps the element's lines after a preset load [M LOG_elundo_final.txt: 1431 -> 1507 bytes]
   return dec:sub(i, j - 1) .. "\1" .. dec:sub(j, ks - 1) .. el .. "\1" .. dec:sub(ke + 1)
 end
+-- 2026-10-17: cutting bytes is not enough when the cut field changes the TEXT LENGTH. TR5 writes the editor scale as the shortest
+-- round-trip text: "1.100000023841858" (17 chars) for a default instance but "1.0" (3 chars) when the editor was opened at 100 %
+-- [M tests/mbp_run/v2/LOG_tr5len_old_r2c.txt, MBP; the Studio log of 2026-10-17 01:27 has the same pair: header "aa 15" vs "c6 15" = 5546 vs 5574].
+-- The decoded state starts with size fields that follow the total length: LE int32 at 0 (len - 16), BE int32 at 28 (the CcnK byteSize,
+-- len - 40) and BE int32 just before "<?xml" (len - 192), all of them 28 smaller for the short text. Two otherwise identical states
+-- then differ in these 3 fields and nothing else. So before the cut, every 4-byte aligned int32 in front of "<?xml" whose value is
+-- within SIZE_WINDOW below the decoded length is a size field; it is compared as its distance from the length ("len - value"),
+-- which does not move when only the cut field changes length. The token has the same 4 bytes (offsets and the header report of
+-- first_diff stay valid; the log shows the token, not the original integer), and nothing else of the state is touched. Only for `pats` families (Nebula uses `extract`).
+M.SIZE_WINDOW = 512          -- a size field is at most this far below the decoded length (the fields seen: 16, 40, 192)
+M.SIZE_MIN_LEN = 1024        -- shorter states are compared as they are (small header integers could match the window)
+local function size_tokens(dec)
+  local n = #dec
+  local x = dec:find("<?xml", 1, true)
+  if n < M.SIZE_MIN_LEN or not x then return dec end
+  local out, last = {}, 1
+  for o = 0, x - 5, 4 do                                    -- o = 0-based offset; the int32 must end before the XML
+    local le, be = string.unpack("<I4", dec, o + 1), string.unpack(">I4", dec, o + 1)
+    local tag, d
+    if le <= n and n - le <= M.SIZE_WINDOW then tag, d = "\254", n - le
+    elseif be <= n and n - be <= M.SIZE_WINDOW then tag, d = "\253", n - be end
+    if tag then
+      out[#out + 1] = dec:sub(last, o)
+      out[#out + 1] = string.pack("<I2", d) .. tag .. "\255"     -- low byte first: a real size difference is reported at the field start
+      last = o + 5
+    end
+  end
+  if last == 1 then return dec end
+  out[#out + 1] = dec:sub(last)
+  return table.concat(out)
+end
 local function apply_mask(m, dec)
   if m.extract == "nebula" then return extract_nebula(dec) end
+  dec = size_tokens(dec)
   for _, pat in ipairs(m.pats) do dec = dec:gsub(pat, "") end
   return dec
 end

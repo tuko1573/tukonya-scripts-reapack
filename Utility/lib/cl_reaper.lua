@@ -34,6 +34,7 @@ function M.new(R)
   local io = { R = R, logs = {}, stats = { status_writes = 0, blob_reads = {}, blob_writes = {}, sets = 0, bypass_sets = 0 } }
   local proj = nil
   local last_proj = nil  -- the project before the last tab switch (R4b commit_pending)
+  local block_depth = 0     -- open io.begin_block calls (the native fallback runs only inside one)
   local mids = {}        -- mid → { tr, tidx (0-based), cont (addr), children = {addr...}, ids = {ident...}, addr = {[k] = addr}, class = {[k]} }
   local addrmap = {}     -- tidx → { [addr] = {mid, k} }
   local markers = {}     -- rec.key → { tr, addr, tidx }
@@ -473,6 +474,19 @@ function M.new(R)
     if not ok or ii ~= -1 or ti < 0 or (flag & 1) == 1 then return nil end
     local e = addrmap[ti] and addrmap[ti][fx]
     if not e then return nil end
+    -- an inner FX shown in its container's window is reported as the container itself (7.83 [M LOG_src_gate2]):
+    -- the inner slot is the one GetOpen reports open there (exactly one), else the container's own slot
+    if e.k == "c" then
+      local m = mids[e.mid]
+      local hit
+      for j, a in ipairs(m.children) do
+        if not is_marker(m.ids[j]) and R.TrackFX_GetOpen(m.tr, a) then
+          if hit then hit = nil; break end
+          hit = addrmap[ti][a]
+        end
+      end
+      if hit then return { mid = hit.mid, k = hit.k } end
+    end
     return { mid = e.mid, k = e.k }
   end
 
@@ -580,9 +594,13 @@ function M.new(R)
     io.stats.struct_writes = (io.stats.struct_writes or 0) + 1
     io.stats.struct_ms = io.stats.struct_ms or {}
     io.stats.struct_ms[#io.stats.struct_ms + 1] = ms
+    local note = ("%.1f ms, %d kept FXIDs, %d new, %d mappings dropped%s"):format(ms, info.matched, info.new, info.dropped_parms, lanes_note)
+    -- refused: REAPER loads nothing and the track stays as it was (an item with Melodyne as take FX refuses even the
+    -- unmodified readback [M tests/mbp_run/v2/LOG_takefx.txt]); its addresses stay valid for the native fallback
+    if not ok then io.stats.struct_refused = (io.stats.struct_refused or 0) + 1; return false, "REAPER refused the track chunk: " .. note, true end
     mids[dst] = nil                                      -- addresses on that track are stale until the next scan
     dirty[dm.tidx] = true
-    return ok, ("%.1f ms, %d kept FXIDs, %d new, %d mappings dropped%s"):format(ms, info.matched, info.new, info.dropped_parms, lanes_note)
+    return ok, note
   end
 
   --- structure sync: the source's current block into the target (both re-read now)
@@ -590,22 +608,32 @@ function M.new(R)
     if src == dst then return false, "same member" end
     local b = io.read_block(src)
     if not b then return false, "source block not found" end
-    return io.write_block(b, dst, why)
+    local ok, info, refused = io.write_block(b, dst, why)
+    if ok or not refused then return ok, info end
+    -- the same result with REAPER's own FX calls: delete / move / copy from the source (a copy carries its state), and the
+    -- source's saved state into the kept VST items (what the block carries). Third return value true: some plugins keep
+    -- showing their old numbers after a state write, so cl_core writes the values too (not a lagging readback). Only
+    -- inside an undo block (the calls are undoable; outside one each would make its own entry).
+    if block_depth < 1 then return false, info .. "; no native fallback outside an undo block" end
+    local fok, finfo = io.native_struct(src, dst, why, true)
+    return fok, info .. "; " .. tostring(finfo), fok
   end
   -- ---------------------------------------------------------------- native structure sync (reorder / remove)
   --- the deletes/moves turning dst into src's order, or nil (an add, a nested container, unresolved → chunk path)
-  function io.native_plan(src, dst)
+  --- copy = true: plugins the target lacks are copied from the source (fallback for a refused block write, see copy_struct)
+  function io.native_plan(src, dst, copy)
     local sm, dm = mids[src], mids[dst]
     if not sm or not dm or src == dst then return nil end
     if dm.cont >= 0x2000000 then return nil end         -- nested container: the item address formula is not trusted [M P5]
-    return S.native_plan(sm.ids, dm.ids, is_marker)
+    if copy and (sm.cont >= 0x2000000 or sm.tr == dm.tr) then return nil end
+    return S.native_plan(sm.ids, dm.ids, is_marker, copy)
   end
 
   --- REAPER's own TrackFX_Delete / TrackFX_CopyToTrack(is_move) on the target; instances are kept (0.01–0.2 ms per op,
   --- no audio gap [M e3]). Must run inside the caller's undo block. Returns ok, info.
-  function io.native_struct(src, dst, why)
-    local dm = mids[dst]
-    local ops = io.native_plan(src, dst)
+  function io.native_struct(src, dst, why, copy)
+    local dm, sm = mids[dst], mids[src]
+    local ops, keep = io.native_plan(src, dst, copy)
     if not ops then return false, "not expressible natively" end
     local tr, ci = dm.tr, dm.cont
     local t0 = R.time_precise()
@@ -616,18 +644,86 @@ function M.new(R)
       return t
     end
     local function caddr(pos) return 0x2000000 + pos * (R.TrackFX_GetCount(tr) + 1) + (ci + 1) end
-    local nd, nm = 0, 0
+    local nd, nm, nc = 0, 0, 0
     for _, o in ipairs(ops) do
       local it = items()
       if o.op == "delete" then R.TrackFX_Delete(tr, it[o.pos]); nd = nd + 1
+      elseif o.op == "copy" then R.TrackFX_CopyToTrack(sm.tr, sm.children[o.src], tr, caddr(o.to), false); nc = nc + 1   -- a plain insert
       else R.TrackFX_CopyToTrack(tr, it[o.from], tr, caddr(S.insert_pos(o.from, o.to)), true); nm = nm + 1 end
+    end
+    local ns, bad = 0, false
+    if copy then
+      local it = items()
+      bad = #it ~= #sm.children
+      for _, e in ipairs(keep) do         -- kept VST items: the source's saved state, only where it differs (what the block carries)
+        local a, sa = it[e.to], sm.children[e.src]
+        if a and sa and class_of(tr, a, sm.ids[e.src]) == "vst" then
+          local ok1, s1 = R.TrackFX_GetNamedConfigParm(sm.tr, sa, "vst_chunk")
+          local ok2, s2 = R.TrackFX_GetNamedConfigParm(tr, a, "vst_chunk")
+          if ok1 and s1 ~= "" and not (ok2 and s1 == s2) then
+            R.TrackFX_SetNamedConfigParm(tr, a, "vst_chunk", s1); ns = ns + 1
+            own = { ti = dm.tidx, a = a, p = nil }
+          end
+        end
+      end
     end
     local ms = (R.time_precise() - t0) * 1000
     io.stats.native_ms = io.stats.native_ms or {}
     io.stats.native_ms[#io.stats.native_ms + 1] = ms
     mids[dst] = nil
     dirty[dm.tidx] = true
-    return true, ("native: %d moves, %d deletes, %.2f ms (%s)"):format(nm, nd, ms, tostring(why))
+    local info = ("native: %d moves, %d deletes, %d copies, %d states, %.2f ms (%s)"):format(nm, nd, nc, ns, ms, tostring(why))
+    if bad then return false, info .. ": item count differs from the source afterwards" end
+    return true, info
+  end
+
+  --- LINK (2026-11-01, docs/LINK_RELOAD_2026-11-01.md): the target container's inner FX other than its marker are DELETED and the source's
+  --- are copied in by REAPER's own TrackFX_CopyToTrack, in source order (new instances carrying the source's saved state). One path for every
+  --- track (no track chunk). The target keeps its marker (its own Ch) at its position. The target's old block goes to the backup file BEFORE the
+  --- first delete; if that fails nothing is deleted. Must run inside the caller's undo block. Returns ok, info.
+  function io.link_struct(src, dst, why)
+    if src == dst then return false, "same member" end
+    local sm, dm = mids[src], mids[dst]
+    if not sm or not dm then return false, "unresolved" end
+    if block_depth < 1 then return false, "no LINK outside an undo block" end
+    if sm.cont >= 0x2000000 or dm.cont >= 0x2000000 then return false, "nested container: not supported" end
+    if sm.tr == dm.tr then return false, "source and target on one track: not supported" end
+    local old = io.read_block(dst)
+    if not old or not backup(dm, old.lines, why or "LINK") then return false, "backup failed: nothing deleted" end
+    local tr, ci = dm.tr, dm.cont
+    local t0 = R.time_precise()
+    local function items()
+      local n = tonumber(cfg(tr, ci, "container_count")) or 0
+      local t = {}
+      for k = 0, n - 1 do t[#t + 1] = tonumber(cfg(tr, ci, "container_item." .. k)) end
+      return t
+    end
+    local function caddr(pos) return 0x2000000 + pos * (R.TrackFX_GetCount(tr) + 1) + (ci + 1) end
+    local mt = 1
+    for j, id in ipairs(dm.ids) do if is_marker(id) then mt = j; break end end
+    local nd, nc = 0, 0
+    for j = #dm.ids, 1, -1 do
+      if not is_marker(dm.ids[j]) then local it = items(); R.TrackFX_Delete(tr, it[j]); nd = nd + 1 end
+    end
+    local srcs = {}
+    for j, id in ipairs(sm.ids) do if not is_marker(id) then srcs[#srcs + 1] = sm.children[j] end end
+    local total = #srcs + 1
+    local mf = math.min(mt, total)
+    local si = 1
+    for f = 1, total do
+      if f ~= mf then
+        R.TrackFX_CopyToTrack(sm.tr, srcs[si], tr, caddr(f), false); si = si + 1; nc = nc + 1
+      end
+    end
+    local bad = #items() ~= total
+    local ms = (R.time_precise() - t0) * 1000
+    io.stats.native_ms = io.stats.native_ms or {}
+    io.stats.native_ms[#io.stats.native_ms + 1] = ms
+    mids[dst] = nil
+    dirty[dm.tidx] = true
+    local info = ("LINK reload: %d deleted, %d copied, %.1f ms (freeze)"):format(nd, nc, ms)
+    if bad then return false, info .. ": item count differs from the source afterwards" end
+    return true, info
   end
 
   --- undo/redo chaining (one Ctrl+Z / Ctrl+Shift+Z moves the user's entry and our sync entry together)
@@ -750,6 +846,31 @@ function M.new(R)
   --- heartbeat off: the marker then shows 「スクリプト停止中」
   function io.stopped()
     if R.gmem_write then R.gmem_write(0, 0) end
+    if R.TrackCtl_SetToolTip then R.TrackCtl_SetToolTip("", 0, 0, true) end
+  end
+
+  --- is a window of this container showing (an inner FX floating, the container's own window, or the track's FX chain)
+  function io.showing(mid)
+    local m = mids[mid]; if not m then return false end
+    if R.TrackFX_GetOpen(m.tr, m.cont) then return true end
+    for j, a in ipairs(m.children) do
+      if not is_marker(m.ids[j]) and R.TrackFX_GetOpen(m.tr, a) then return true end
+    end
+    return R.TrackFX_GetChainVisible(m.tr) ~= -1
+  end
+
+  --- a short note next to the mouse for a few seconds (no window, no focus; same as TUKONYA Auto Gain), kept up by io.tip_tick
+  local tip_text, tip_x, tip_y, tip_until
+  function io.tip(text, sec)
+    if not R.TrackCtl_SetToolTip then return end
+    tip_x, tip_y = R.GetMousePosition()
+    tip_text, tip_until = "Container Link  " .. text, R.time_precise() + (sec or 4)
+    R.TrackCtl_SetToolTip(tip_text, tip_x + 14, tip_y + 14, true)
+  end
+  function io.tip_tick()
+    if not tip_until then return end
+    if R.time_precise() < tip_until then R.TrackCtl_SetToolTip(tip_text, tip_x + 14, tip_y + 14, true)
+    else tip_until = nil; R.TrackCtl_SetToolTip("", 0, 0, true) end
   end
 
   -- ---------------------------------------------------------------- LINK (cl_link, DESIGN_V2 §4)
@@ -921,8 +1042,8 @@ function M.new(R)
     return "cancel"
   end
 
-  function io.begin_block() R.Undo_BeginBlock2(proj) end
-  function io.end_block(desc) R.Undo_EndBlock2(proj, desc, -1) end
+  function io.begin_block() block_depth = block_depth + 1; R.Undo_BeginBlock2(proj) end
+  function io.end_block(desc) block_depth = math.max(0, block_depth - 1); R.Undo_EndBlock2(proj, desc, -1) end
 
   function io.log(s)
     local l = io.logs

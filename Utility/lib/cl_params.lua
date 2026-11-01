@@ -133,10 +133,12 @@ function M.build(st, io, g, mid, res)
     local info = res.slots[k]
     local bkey = tostring(k) .. "|" .. info.ident
     g.bst[bkey] = g.bst[bkey] or {}
+    g.dst = g.dst or {}
+    g.dst[bkey] = g.dst[bkey] or {}                  -- drift per member (source gate, 2026-11-01): survives slot rebuilds like g.bst
     local S = { k = k, ident = info.ident, class = info.class, n = info.n, meta = meta(st, io, mid, k, info),
                 last = {}, agreed = {}, hot = {}, fz = {}, frozen = {}, env = {}, dyn = {},
                 byp = {}, byp_agreed = nil, blob = g.bst[bkey], rd = {}, pend = {}, pend_byp = {}, pend_blob = {},
-                nmap = {}, cur = 1, selfq = {}, lagset = lagstore(st, io) }
+                nmap = {}, cur = 1, selfq = {}, lagset = lagstore(st, io), drift = g.dst[bkey] }
     g.slots[k] = S
     g.order[#g.order + 1] = k
     -- family by state signature (cl_lag.sniff): one state read per new vst ident, decided before any value path touches the slot
@@ -156,6 +158,7 @@ function M.forget(g, mid)
   for _, S in pairs(g.slots) do
     S.last[mid] = nil; S.byp[mid] = nil; S.blob[mid] = nil; S.rd[mid] = nil; S.dyn[mid] = nil; S.nmap[mid] = nil
     S.pend[mid] = nil; S.pend_byp[mid] = nil; S.pend_blob[mid] = nil
+    if S.drift then S.drift[mid] = nil end
   end
 end
 
@@ -214,7 +217,9 @@ function M.event(S, mid, now, cfg)
   if not rd then rd = {}; S.rd[mid] = rd end
   rd.ev_until = now + cfg.ready_window
   rd.fp = nil; rd.fpx = nil
-  rd.blobcheck = (S.class == "vst")
+  -- only VST3 waits for its saved state: a VST2 has none here (ReaComp, VST2 Pro-C 2: vst_chunk read is empty
+  -- [M LOG_reacomp.txt 2026-10-26, RESULTS_HIDDEN]) and waiting for it left the slot without members (stopped the script)
+  rd.blobcheck = (S.class == "vst") and tostring(S.ident):lower():find("vst3", 1, true) ~= nil
   rd.next_blob = 0
 end
 
@@ -279,6 +284,85 @@ function M.ready(st, io, g, S, mid, info, now, cfg)
   return r
 end
 
+
+-- ------------------------------------------------------------------ source gate (2026-11-01, docs/SOURCE_GATE_2026-11-01.md)
+-- Per Link Ch at most ONE slot is the source: the last focused FX slot (kept while REAPER reports nothing); to become it, its window
+-- must be showing at that moment. `touched` never makes a source (the script's own writes are reported as touched). A change on a member that
+-- is not the source is not written anywhere: it is remembered as drift (S.drift[m][p], p = a param index or "state"), the marker says so.
+-- A write into the member (value election, state write, LINK, undo restore) ends the drift it overwrites.
+-- Selected track first (2026-11-01, docs/SOURCE_GATE_2026-11-01.md): only members on selected tracks (ctx.selected) may be the source.
+-- One selected member = the source for all its slots. Several: the member holding the focused FX (last non-nil kept), else the one the user
+-- touched, else (no preference) the member that changes first takes over; an earlier source stays while it is among them. Nothing is selected = no source.
+function M.update_source(g, ctx)
+  local sel, list = {}, {}
+  for _, m in ipairs(g.members) do
+    if g.linked[m] and ctx.res[m] and ctx.selected[m] then sel[m] = true; list[#list + 1] = m end
+  end
+  g.sel_set = sel
+  local f, t = ctx.focused, ctx.touched
+  if f and g.linked[f.mid] then g.focus_last = f.mid end
+  if g.focus_last and not g.linked[g.focus_last] then g.focus_last = nil end
+  g.src_pref = false
+  if #list == 0 then g.src = nil; return end
+  if #list == 1 then g.src = { m = list[1] }; g.src_pref = true; return end
+  if g.focus_last and sel[g.focus_last] then g.src = { m = g.focus_last }; g.src_pref = true; return end
+  if t and sel[t.mid] then g.src = { m = t.mid }; g.src_pref = true; return end
+  if not (g.src and sel[g.src.m]) then g.src = { m = list[1] } end        -- topmost (g.members is sorted by track index)
+end
+
+function M.can_source(g, S, m)
+  if not (g.sel_set and g.sel_set[m] and g.linked[m]) then return false end
+  if g.src and g.src.m == m then return true end
+  if g.src_pref then return false end                  -- a focused / touched / only selected member decides
+  g.src = { m = m }                                     -- no preference: the selected member that changes takes over
+  return true
+end
+
+local function drift_mark(S, m, key)
+  if not S.drift then return end
+  local d = S.drift[m]
+  if not d then d = {}; S.drift[m] = d end
+  d[key] = true
+end
+M.drift_mark = drift_mark
+local function drift_clear(S, m, key)
+  local d = S.drift and S.drift[m]
+  if d then d[key] = nil; if next(d) == nil then S.drift[m] = nil end end
+end
+M.drift_clear = drift_clear
+
+--- members of slot S that count for "all members agree" (drifted ones are left out; all of them if every member drifted)
+function M.undrifted(S)
+  local out = {}
+  for _, m in ipairs(S.mem) do if not (S.drift and S.drift[m]) then out[#out + 1] = m end end
+  if #out == 0 then return S.mem end
+  return out
+end
+
+--- does member m differ from the group in any slot (drift)? -> marker status
+function M.drifted(g, m)
+  if not g.dst then return false end
+  for _, d in pairs(g.dst) do if d[m] and next(d[m]) then return true end end
+  return false
+end
+
+--- how many differences member m holds on this Ch (all slots): a rise is a new one
+function M.drift_count(g, m)
+  local n = 0
+  if not g.dst then return 0 end
+  for _, d in pairs(g.dst) do if d[m] then for _ in pairs(d[m]) do n = n + 1 end end end
+  return n
+end
+
+--- pushed-back knob events of member m (a rise is a new one)
+function M.push_count(g, m) return g.push_n and g.push_n[m] or 0 end
+
+--- LINK: every member of the Ch is the group's again
+function M.clear_drift(g)
+  if not g.dst then return end
+  for _, d in pairs(g.dst) do for m in pairs(d) do d[m] = nil end end
+end
+
 -- ------------------------------------------------------------------ writes
 --- a value/bypass write into (mid, slot): never touches the agreed blob (DESIGN_V2 §2.1, review R1b); it only explains a
 --- blob change seen by a witness read (§2.4)
@@ -301,6 +385,7 @@ local function write_param(st, io, S, mid, p, v, now, cfg, echo)
   local r = io.set(mid, S.k, p, v)
   st.stats.writes = st.stats.writes + 1
   quiet_blob(S, mid, now, cfg)
+  drift_clear(S, mid, p)
   if not echo then
     S.wr = S.wr or {}
     local w = S.wr[mid]; if not w then w = {}; S.wr[mid] = w end
@@ -365,6 +450,14 @@ local function lag_signal(st, io, S, p, v, mem, ctx)
 end
 M.lag_signal = lag_signal
 
+--- is a window of member m's container showing (cached per tick)
+local function win_showing(io, ctx, m)
+  if not io.showing then return false end
+  local c = ctx.showc; if not c then c = {}; ctx.showc = c end
+  local s = c[m]; if s == nil then s = io.showing(m) and true or false; c[m] = s end
+  return s
+end
+
 --- elect one param p of slot S from the values v[m] just read on every member in `mem`
 local function elect(st, io, g, S, p, v, mem, ctx)
   if p >= 0 and lagging(S) then return lag_signal(st, io, S, p, v, mem, ctx) end   -- readbacks are no values (cl_lag)
@@ -392,7 +485,49 @@ local function elect(st, io, g, S, p, v, mem, ctx)
       -- editor echo): the agreed value is re-asserted, nothing is elected (M2, RESULTS_SOOTHE_REORDER §1b)
       local a = S.agreed[p]
       if a ~= nil and abs(v[m] - a) > tc then lm[p] = write_param(st, io, S, m, p, a, now, cfg, true) else lm[p] = v[m] end
-    elseif abs(v[m] - l) > ts then n = n + 1; changed[n] = m; cset[m] = true end
+    elseif abs(v[m] - l) > ts then
+      if M.can_source(g, S, m) then n = n + 1; changed[n] = m; cset[m] = true
+      else
+        -- not the source (an unselected track, user decision 2026-11-01 "C"): a VALUE change is pushed back to the group's value at once.
+        -- Nothing spreads; the write is an echo-type re-assert (no new edit). Only values: a state change stays drift (cl_blob).
+        local bm = S.blob[m]; if bm then bm.explained = now end        -- a param change still explains a state change (witness, §2.4)
+        local ref = S.agreed[p]
+        if ref == nil then
+          for _, o in ipairs(mem) do
+            if o ~= m and (ref == nil or (g.src and g.src.m == o)) then ref = v[o] end
+          end
+        end
+        if ref ~= nil and abs(v[m] - ref) > tc and win_showing(io, ctx, m) then
+          -- (2026-11-01 "A", Studio crash 20:04) its window is showing: nothing is written under it (a band removed under an open
+          -- Pro-Q 4 crashed REAPER on the next click). It is a difference of this track until the window closes, then pushed back.
+          lm[p] = v[m]
+          S.pend_push = S.pend_push or {}
+          local q = S.pend_push[m]; if not q then q = {}; S.pend_push[m] = q end
+          q[p] = true
+          drift_mark(S, m, p)
+        elseif ref ~= nil and abs(v[m] - ref) > tc then
+          lm[p] = write_param(st, io, S, m, p, ref, now, cfg, true)
+          S.pushed = S.pushed or {}
+          local pm = S.pushed[m]; if not pm then pm = {}; S.pushed[m] = pm end
+          if now - (pm[p] or -1e9) > 1.0 then g.push_n = g.push_n or {}; g.push_n[m] = (g.push_n[m] or 0) + 1 end
+          pm[p] = now
+          -- a param that keeps moving by itself on a non-source member (meters) must not be fought for ever: frozen after 10 pushes within 2 s
+          S.pcnt = S.pcnt or {}
+          local pc = S.pcnt[p]
+          if not pc or now - pc.t0 > 2.0 then pc = { t0 = now, n = 0 }; S.pcnt[p] = pc end
+          pc.n = pc.n + 1
+          local wi = ctx.res and ctx.res[m] and ctx.res[m].slots[S.k]
+          if pc.n >= 10 and not (wi and (wi.open or wi.chain)) then       -- (a user dragging in its window is no self-moving param)
+            S.frozen[p] = true
+            st.stats.frozen = st.stats.frozen + 1
+            if io.blog then io.blog(("freeze | Ch %d slot %s p%d frozen (keeps changing by itself on a non-source member) | %s"):format(g.ch, tostring(S.k), p, tostring(S.ident))) end
+          end
+        else
+          lm[p] = v[m]
+          drift_clear(S, m, p)
+        end
+      end
+    end
   end
   if n == 0 then return false end
   -- source lock: the member that is changing p keeps the lead until lock_hold after its last change; changes on other
@@ -428,6 +563,7 @@ local function elect(st, io, g, S, p, v, mem, ctx)
   S.mt[winner] = now
   for i = 1, n do S.last[changed[i]][p] = v[changed[i]] end
   S.agreed[p] = w
+  drift_clear(S, winner, p)                                       -- the source's own value is the group's now
   S.hot[p] = now + cfg.hot_time
   S.last_src, S.last_src_t = winner, now
   for _, m in ipairs(mem) do
@@ -460,6 +596,33 @@ local function elect(st, io, g, S, p, v, mem, ctx)
   return true
 end
 M.elect = elect
+
+--- (2026-11-01 "A") once per tick: an unselected track whose window has closed gets its held-back changes pushed back to the group's value
+function M.flush_pend(st, io, g, ctx)
+  for _, k in ipairs(g.order or {}) do
+    local S = g.slots and g.slots[k]
+    if S and S.pend_push then
+      for m, pp in pairs(S.pend_push) do
+        if not g.linked[m] then S.pend_push[m] = nil
+        elseif not win_showing(io, ctx, m) then
+          S.pend_push[m] = nil
+          local lm = S.last[m]; if not lm then lm = {}; S.last[m] = lm end
+          for p in pairs(pp) do
+            local ref, cur = S.agreed[p], io.get(m, k, p)
+            if ref == nil then                                 -- no agreed value yet: the source's (else another linked member's) value
+              local o = g.src and g.src.m ~= m and g.linked[g.src.m] and g.src.m
+              if not o then for _, x in ipairs(S.mem or g.members) do if x ~= m and g.linked[x] then o = x; break end end end
+              if o then ref = io.get(o, k, p) end
+            end
+            if ref ~= nil and cur ~= nil and abs(cur - ref) > tol_c(S, p) then lm[p] = write_param(st, io, S, m, p, ref, ctx.now, ctx.cfg, true)
+            elseif cur ~= nil then lm[p] = cur end
+            drift_clear(S, m, p)
+          end
+        end
+      end
+    end
+  end
+end
 
 --- read p on every member of the slot and elect
 local function check(st, io, g, S, p, mem, ctx)
@@ -579,9 +742,35 @@ function M.bypass(st, io, g, S, mem, ctx)
   end
 end
 
+-- ------------------------------------------------------------------ one rule: a delivered state is not overwritten by a stale readback
+--- 2026-10-28 (LED Compressor [M tests/mbp_run/v2/LOG_ledcase_base.txt, MBP 7.83]): a plugin's readbacks can follow its saved state
+--- while the SOURCE's readbacks are stale (LED auto-gain: the source's state says Output -7 dB, its readback still shows 0 dB).
+--- A copy that carries the state (block copy: LINK, structure sync) then has right readbacks, and writing the source's readbacks over
+--- them made the copy +11 dB. For a vst slot that is not lagging, whose saved state on `t` is not byte-equal to the source's and whose
+--- own readbacks differ from the source's (cross tolerance), the source's readbacks are therefore not written: the release path's
+--- whole-state write is used (blob_write: the source's state, readbacks that follow it are kept, st.follows), own params only
+--- (roles and bypass stay with the caller, no lagging evidence). A slot whose readbacks already equal the source's, or whose state
+--- is byte-equal, takes no extra state write. Returns nd (number of differing readbacks), follows; or nil when the rule does not apply.
+--- `before` = { [p] = readback }: t's readbacks from before a block write, when the caller has them (LINK).
+function M.state_owner_write(st, io, g, S, src, t, bsrc, ctx, before)
+  if S.class ~= "vst" or lagging(S) or not bsrc or bsrc == "" then return nil end
+  if same_state(S, io.blob(t, S.k), bsrc) then return nil end
+  local nd = 0
+  for _, p in ipairs(S.meta.list) do
+    if p >= 0 and synced(S, p) and abs(io.get(t, S.k, p) - io.get(src, S.k, p)) > tol_c(S, p) then nd = nd + 1 end
+  end
+  if nd == 0 then return nil end
+  return nd, M.blob_write(st, io, g, S, src, t, bsrc, ctx, { link = true, before = before })
+end
+
 -- ------------------------------------------------------------------ align one member to another (joins, re-entry)
---- copy src's state of slot S onto dst: blob first (vst), then values verified against src (MUST 6), bypass
+--- copy src's state of slot S onto dst: blob first (vst), then values verified against src (MUST 6), bypass.
+--- with_blob = "values": dst got src's state by a state write (native structure fallback, cl_reaper.copy_struct), where
+--- some plugins keep showing their old numbers (Pro-Q 3 [M tests/mbp_run/v2/LOG_melodyne2.txt]): the differing values of a
+--- plugin not known as lagging are written, not taken as a lagging readback (no learning from our own write).
 function M.align_slot(st, io, g, S, src, dst, ctx, with_blob)
+  local values_mode = with_blob == "values"
+  if values_mode then with_blob = false end
   local now, cfg = ctx.now, ctx.cfg
   local blob_written = false
   -- a source whose state is asleep / loading / still changing is never copied (Nebula family): deferred, the caller retries (false)
@@ -603,17 +792,28 @@ function M.align_slot(st, io, g, S, src, dst, ctx, with_blob)
       return true
     end
   end
+  -- the state is the truth where the readbacks disagree (see state_owner_write): its own params are not written from the source's readbacks
+  local delivered = false
+  if S.class == "vst" then
+    local nd = M.state_owner_write(st, io, g, S, src, dst, io.blob(src, S.k), ctx)
+    if nd then
+      delivered = true
+      if io.blog then io.blog(("state owner | %s | Ch %d slot %s: %d readback(s) differ from the source, state written, readbacks kept"):format(tostring(S.ident), g.ch, tostring(S.k), nd)) end
+    end
+  end
   -- same saved state on both (e.g. right after a structure copy, which carries the plugin state): the plugin's own params
   -- are already equal in sound; a readback difference there is a lagging readback (TR5 EQ-81 shows its defaults after a
   -- load or a state write [M tests/probes/RESULTS_TR5_GAIN.md]) and must not be written over the target (2026-10-10).
   -- (An ident not yet known as lagging: this keeps the write off, and counts as one observation towards learning it.)
   local ss
   for _, p in ipairs(S.meta.list) do
-    if synced(S, p) then
+    if delivered and p >= 0 and synced(S, p) then
+      S.last[src][p] = io.get(src, S.k, p); S.last[dst][p] = io.get(dst, S.k, p)       -- the state owns it (blob_write kept the readbacks)
+    elseif synced(S, p) then
       local vs, vd = io.get(src, S.k, p), io.get(dst, S.k, p)
       local lim = blob_written and tol_c(S, p) or 0
       if abs(vd - vs) > lim then
-        if p >= 0 and ss == nil then
+        if p >= 0 and ss == nil and not values_mode then
           local bs = S.class == "vst" and io.blob(src, S.k)
           ss = (bs and bs ~= "" and M.same_state(S, bs, io.blob(dst, S.k))) or false
           if ss then
@@ -731,17 +931,26 @@ function M.mark_written(S, t, blob, now, cfg)
   B.pending = false
   B.held = nil
   B.explained = now
+  if S.drift then S.drift[t] = nil end                 -- a whole-state write ends the member's drift in this slot
   S.selfq = S.selfq or {}
   S.selfq[t] = { untl = now + cfg.quiet_after_write, n = {} }
 end
 
 --- DESIGN_V2 §3: blob, then EVERY listed host param from the source's current readback (a param whose inbound write to
 --- the source is held takes the agreed value), roles (Wet/Delta are the last list entries), then bypass.
-function M.blob_write(st, io, g, S, src, t, blob, ctx)
+--- opts (LINK step 2, cl_core run_link; nil on every other route):
+---   link = true: the plugin's own params only — LINK writes the roles and the bypass itself (no second write); no lagging
+---     evidence (after the block the readbacks may already show the state, so "the state write moved nothing" is no sign of a
+---     lagging plugin). Readbacks that moved (block + state write, from `before`) are kept in st.follows as on the release path,
+---     so a second LINK, whose targets already show the state, is not mistaken for a copy that did not take.
+---   before = { [p] = readback }: t's own readbacks from before the LINK's block write, the baseline for "followed".
+--- Returns true when t's own readbacks are known to follow its state (moved past tol_c from `before` here, or st.follows).
+function M.blob_write(st, io, g, S, src, t, blob, ctx, opts)
+  opts = opts or {}
   local now, cfg = ctx.now, ctx.cfg
   if needs_ready(S) and LAG.asleep(blob) then       -- last line of defence: the valueless state of an unopened instance is never spread
     M.write_state(st, io, S, t, blob)               -- (refuses and logs)
-    return
+    return false
   end
   local held_in = S.pend[src]
   local lag = lagging(S)     -- known lagging ident: its own params are never written (synced is false for them), only the state
@@ -756,7 +965,7 @@ function M.blob_write(st, io, g, S, src, t, blob, ctx)
       local v
       if held_in and S.agreed[p] ~= nil then v = S.agreed[p] else v = io.get(src, S.k, p) end
       src_v[p] = v
-      before[p] = io.get(t, S.k, p)
+      before[p] = (opts.before and opts.before[p]) or io.get(t, S.k, p)
       if abs(before[p] - v) > tol_c(S, p) then differ = true; if abs(before[p] - v) > M.LAG_MIN_DIFF then bigdiff = true end end
     end
   end
@@ -765,33 +974,52 @@ function M.blob_write(st, io, g, S, src, t, blob, ctx)
   if not (lag and same_state(S, io.blob(t, S.k), blob)) then
     M.write_state(st, io, S, t, blob)
   end
+  -- readbacks that followed the state write. A plugin whose readbacks follow its state (KA1776 [M HANDOVER 2026-10-25
+  -- 20:36], LED [M V3_P1 Item 2]) must not get the source's readbacks afterwards: a stale one (KA1776 INPUT R, LED Output)
+  -- would overwrite the state's value and the copy would differ from the source (2026-10-26, one route per copy).
+  -- Pro-Q 3 readbacks do not follow (LOG_melodyne2): those are still written, else it is learned as lagging.
+  -- (moved: a readback that went more than tol_c away from where it was; a Waves readback jitter (3e-4) is no sign.
+  -- Not "only where it differed from the source": the live value route has usually sent the source's readback already.)
+  local any_moved, moved_any_s = false, false
+  for p, b in pairs(before) do
+    local d = abs(io.get(t, S.k, p) - b)
+    if d > tol_s(S, p) then moved_any_s = true end
+    if d > tol_c(S, p) then any_moved = true end
+  end
+  st.follows = st.follows or {}
+  if any_moved then st.follows[S.ident] = true end
+  local follows = st.follows[S.ident]
   local moved_none = false
   if differ then
-    moved_none = true
-    for p, b in pairs(before) do if abs(io.get(t, S.k, p) - b) > tol_s(S, p) then moved_none = false; break end end
+    moved_none = not moved_any_s
     if moved_none and io.blog then io.blog(("lagging readback | %s | Ch %d slot %s: the state was written, the values were not (they do not follow the state)"):format(tostring(S.ident), g.ch, tostring(S.k))) end
-    if moved_none and chunk_differed and bigdiff then lag_evidence(st, io, S, "set_blob moved no readback while the chunk differed", now) end
+    if moved_none and chunk_differed and bigdiff and not opts.link then lag_evidence(st, io, S, "set_blob moved no readback while the chunk differed", now) end
   end
   local lt = S.last[t] or {}
   S.last[t] = lt
   for _, p in ipairs(S.meta.list) do
-    if synced(S, p) then
+    if opts.link and p < 0 then
+      -- LINK writes the roles itself (cl_core run_link step 2)
+    elseif synced(S, p) then
       local v = src_v[p]
       if v == nil then
         if held_in and S.agreed[p] ~= nil then v = S.agreed[p] else v = io.get(src, S.k, p) end
       end
-      if moved_none and p >= 0 then lt[p] = io.get(t, S.k, p)          -- no agreed value from a readback we do not trust
+      if (moved_none or follows) and p >= 0 then lt[p] = io.get(t, S.k, p)  -- no agreed value from a readback we do not trust
       else lt[p] = write_param(st, io, S, t, p, v, now, cfg); S.agreed[p] = v end
       if S.last[src] then S.last[src][p] = S.last[src][p] or v end
     elseif lag and p >= 0 and scannable(S, p) then
       lt[p] = io.get(t, S.k, p)                                         -- baseline for the edit signal: whatever it shows now
     end
   end
-  local es = (S.pend_byp[src] and S.byp_agreed ~= nil) and S.byp_agreed or io.enabled(src, S.k)
-  local et = io.enabled(t, S.k)
-  if et ~= es then et = io.set_bypass(t, S.k, not es); st.stats.byp_writes = st.stats.byp_writes + 1 end
-  S.byp[t] = et
+  if not opts.link then                                                -- LINK writes the bypass itself (run_link step 3)
+    local es = (S.pend_byp[src] and S.byp_agreed ~= nil) and S.byp_agreed or io.enabled(src, S.k)
+    local et = io.enabled(t, S.k)
+    if et ~= es then et = io.set_bypass(t, S.k, not es); st.stats.byp_writes = st.stats.byp_writes + 1 end
+    S.byp[t] = et
+  end
   M.mark_written(S, t, blob, now, cfg)
+  return follows and true or false
 end
 
 -- ------------------------------------------------------------------ flush after stop
