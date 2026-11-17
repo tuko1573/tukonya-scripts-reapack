@@ -301,6 +301,26 @@
         <link rel="website">https://github.com/tuko1573/tukonya-scripts-reapack</link>
       </metadata>
     </reapack>
+    <reapack name="TUKONYA_Reference Toggle.lua" type="script" desc="TUKONYA Reference Track">
+      <version name="1.0.0" author="tuko" time="2026-11-17T16:46:21Z">
+        <changelog><![CDATA[初版。マスターの出力1/2を、別のチャンネルに送ったリファレンストラックの音に、ショートカット1つで置き換える（ソロ・ミュートを使わない）。リファレンスの間は画面に大きく「REFERENCE」と表示。使い方: リファレンス用トラックを選んで「TUKONYA_Reference Setup」を実行（空いているチャンネルを選ぶ。モニタリングFXにルーターと Eater が入る）、「TUKONYA_Reference Toggle」にショートカットを割り当てる。Mac で確認済み、Windows は未確認。]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA_Reference%20Toggle.lua</source>
+        <source main="main" file="TUKONYA_Reference Setup.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA_Reference%20Setup.lua</source>
+        <source main="main" file="TUKONYA_Reference Display.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA_Reference%20Display.lua</source>
+        <source main="main" file="TUKONYA_Reference Display (Install Startup).lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA_Reference%20Display%20%28Install%20Startup%29.lua</source>
+        <source main="main" file="TUKONYA_Reference Display (Uninstall Startup).lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA_Reference%20Display%20%28Uninstall%20Startup%29.lua</source>
+        <source type="effect" file="TUKONYA Reference Track Eater.jsfx">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA%20Reference%20Track%20Eater.jsfx</source>
+        <source file="lib/ref_core.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/ref_core.lua</source>
+        <source file="lib/ref_display.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/ref_display.lua</source>
+        <source file="lib/ref_startup.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/ref_startup.lua</source>
+        <source file="lib/ref_text.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/lib/ref_text.lua</source>
+        <source file="README_Reference.md">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/README_Reference.md</source>
+      </version>
+      <metadata>
+        <description><![CDATA[{\rtf1 {\fonttbl {\f0 Helvetica;}} \f0\fs20 TUKONYA Reference Track: swaps the master output 1/2 for a reference track sent to another channel pair, with one shortcut (no solo or mute). A big REFERENCE window shows while the reference plays. Select the reference track and run TUKONYA_Reference Setup (pick a free channel pair; it adds the stock IX router and the Eater JSFX to the monitoring FX), then assign a shortcut to TUKONYA_Reference Toggle. Needs REAPER 7.79 or later. Verified on macOS; Windows not yet tested. See README_Reference.md (Japanese) in the install folder.}]]></description>
+        <link rel="website">https://github.com/tuko1573/tukonya-scripts-reapack</link>
+      </metadata>
+    </reapack>
   </category>
   <metadata>
     <description><![CDATA[{\rtf1 {\fonttbl {\f0 Helvetica;}} \f0\fs20 Tukonya Scripts: JSFX effects and ReaScripts for REAPER by tuko. Free for personal use, no warranty.}]]></description>
