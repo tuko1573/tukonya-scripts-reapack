@@ -92,6 +92,8 @@ function M.resolve(tab, keys, detected, api)
   end
   -- Mastering: v2.4.0 までの出力の項目（OUT_WAV など）を、出力の一覧 OUTPUTS に直してから重ねる
   if tab == "mastering" then wide = S.migrate_mastering(wide) end
+  -- v2.10.0: 保存してあった名前が古い既定とまったく同じなら、新しい既定（$renderno 入り）へ移す
+  wide = S.migrate_run_patterns(tab, wide)
   overlay(wide, "wide")
 
   local proj, perr = M.load_project(tab, api)
@@ -99,6 +101,7 @@ function M.resolve(tab, keys, detected, api)
     warns[#warns + 1] = "この曲の記憶が壊れていて読めなかったので、使いませんでした（次に書き出すと保存し直します）。"
   end
   if tab == "mastering" then proj = S.migrate_mastering(proj) end
+  proj = S.migrate_run_patterns(tab, proj)
   overlay(proj, "project")
 
   -- v2.8.0: 『24bit Dither』／『16bit Dither』の名前は全タブ共通になった。このタブの記憶（全体の既定・この曲）の
@@ -130,6 +133,70 @@ function M.resolve(tab, keys, detected, api)
   local clean = {}
   for _, k in ipairs(keys) do clean[k] = merged[k] end
   return clean, src, warns
+end
+
+-- ---------------------------------------------------------------- 書き出し番号（v2.10.0）
+-- 2mix Render と 2mix Preview が同じ数を使う（この曲で書き出しに成功した回数）。
+-- 2か所に控える: ①この曲（ProjExtState。.RPP と一緒に保存される） ②REAPER全体（ExtState。保存せず閉じても戻らない）。
+--   ①の値は「プロジェクトのファイル名」と一緒に持つ。名前が変わった（別名で保存した）ら、そのファイル名の数ではない
+--   ので無視する（＝01 から）。②は「プロジェクトの場所（フルパス）」をキーにして、ファイル名も一緒に持つ。
+--   読むときは、今のファイル名と合う方の最大を取る。書くときは両方に同じ値を書く（食い違わない）。
+--   未保存のプロジェクト（ファイル名が空）は①だけ（②は場所が無いので作らない）。保存して名前が付くと 01 から。
+M.RUN_KEY = "run_count"
+local function enc(x) return (tostring(x or ""):gsub("[|%%%c]", function(c) return ("%%%02X"):format(c:byte()) end)) end
+local function path_hash(p)
+  local h = 5381
+  for i = 1, #p do h = (h * 33 + p:byte(i)) % 4294967296 end
+  return ("%08x"):format(h)
+end
+function M.run_wide_key(path) return "runcount_" .. path_hash(tostring(path or "")) end
+
+-- いま開いているプロジェクトの「ファイル名」と「場所」。戻り値: { name = ファイル名, path = フルパス }（未保存は両方 ""）
+function M.run_context(api)
+  api = api_of(api)
+  local path = ""
+  if api.EnumProjects then
+    local _, fn = api.EnumProjects(-1, "")
+    path = tostring(fn or "")
+  end
+  local name = path:gsub("\\", "/"):match("([^/]*)$") or ""
+  if name == "" and api.GetProjectName then
+    local nm = api.GetProjectName(0, "")
+    if type(nm) == "string" then name = nm end
+  end
+  return { name = name, path = path }
+end
+
+-- 戻り値: 今の番号（これまでの成功回数。0 なら未実行）, ctx, { proj = 数/nil, wide = 数/nil }
+function M.run_peek(api)
+  api = api_of(api)
+  local ctx = M.run_context(api)
+  local best, seen = 0, { proj = nil, wide = nil }
+  local ok, text = api.GetProjExtState(0, M.SECTION, M.RUN_KEY)
+  if ok and ok ~= 0 and type(text) == "string" then
+    local n, nm = text:match("^(%d+)|(.*)$")
+    if n and nm == enc(ctx.name) then seen.proj = tonumber(n); best = math.max(best, seen.proj) end
+  end
+  if ctx.path ~= "" then
+    local v = api.GetExtState(M.SECTION, M.run_wide_key(ctx.path))
+    if type(v) == "string" and v ~= "" then
+      local n, nm, pth = v:match("^(%d+)|([^|]*)|(.*)$")
+      if n and nm == enc(ctx.name) and pth == enc(ctx.path) then seen.wide = tonumber(n); best = math.max(best, seen.wide) end
+    end
+  end
+  return best, ctx, seen
+end
+
+-- 書き出しに成功した回の番号 n を確定する（両方に同じ値を書く）。戻り値: ctx
+function M.run_commit(n, api)
+  api = api_of(api)
+  local ctx = M.run_context(api)
+  n = math.floor(tonumber(n) or 0)
+  api.SetProjExtState(0, M.SECTION, M.RUN_KEY, ("%d|%s"):format(n, enc(ctx.name)))
+  if ctx.path ~= "" then
+    api.SetExtState(M.SECTION, M.run_wide_key(ctx.path), ("%d|%s|%s"):format(n, enc(ctx.name), enc(ctx.path)), true)
+  end
+  return ctx
 end
 
 -- ---------------------------------------------------------------- 曲目情報（Mastering）

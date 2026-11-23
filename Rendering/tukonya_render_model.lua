@@ -162,6 +162,7 @@ M.ROWS = {
       { kind = "text",  key = "PAT_AAC",      label = "ファイル名/同時レンダー:",
         visible = "format2_pattern",
         hint = "同時レンダーの形式（AAC/MP3）は、この名前で出ます", note = "dest_aac" },
+      { kind = "check", key = "SNAPSHOT_ON", label = "SWS スナップショットを残す" },
     } },
 
     { kind = "section", label = "オプション", rows = {
@@ -198,11 +199,14 @@ M.ROWS = {
         hint = "空の場合、プロジェクトパスを使います" },
       { kind = "text",  key = "PREVIEW_PATTERN", label = "ファイル名(透かし版):",
         hint = "REAPER標準のワイルドカードが使用可能です", note = "dest_prev" },
-      { kind = "check", key = "RENDER_CLEAN_TOO", label = "透かし無しの版も書き出す" },
-      -- チェックを入れたときだけ出る欄
-      { kind = "text",  key = "DEFAULT_PATTERN", label = "ファイル名(透かし無し):",
+      -- v2.10.0: 書き出す版を選ぶ。どちらも外すと書き出せない（M.gate）。
+      { kind = "check", key = "RENDER_MARKED",    label = "透かしあり" },
+      { kind = "check", key = "RENDER_CLEAN_TOO", label = "透かしなし" },
+      -- 「透かしなし」にチェックを入れたときだけ出る欄
+      { kind = "text",  key = "DEFAULT_PATTERN", label = "ファイル名(透かしなし):",
         when = { key = "RENDER_CLEAN_TOO", value = true },
-        hint = "「透かし無しの版も書き出す」を入れたときだけ使います", note = "dest_clean" },
+        hint = "「透かしなし」を入れたときだけ使います", note = "dest_clean" },
+      { kind = "check", key = "SNAPSHOT_ON", label = "SWS スナップショットを残す" },
     } },
 
     { kind = "section", label = "オプション", rows = {
@@ -395,6 +399,11 @@ function M.detect(tab)
     end
     d.sel_sig = table.concat(g, ",") .. "|" .. tostring(d.track_count)
   end
+  -- v2.10.0: 次の書き出し番号（2mix Render / 2mix Preview。名前の見本に出す。読むだけ）
+  if tab == "mix2" or tab == "preview" then
+    local okn, n = pcall(function() return (Store.run_peek()) end)
+    if okn and tonumber(n) then d.run_next = tonumber(n) + 1 end
+  end
   -- 2mix Preview の透かし用トラック
   if base.PREVIEW_TRACK_NAME then
     d.preview_track = find_track_by_name(base.PREVIEW_TRACK_NAME)
@@ -581,6 +590,8 @@ function M.fill_wildcards(st, s)
   proj = proj:gsub("%.[Rr][Pp][Pp]$", "")
   if proj == "" then proj = "無題" end
   s = S.resolve_delivery_base(tostring(s or ""), M.song_of(st))
+  -- v2.10.0: $renderno は、次に書き出したときの番号（これまでの成功回数 ＋ 1）で見せる
+  if d.run_next then s = S.fill_run_token(s, S.run_label(d.run_next)) end
   return (s:gsub("%$project", proj):gsub("%$date", os.date("%Y-%m-%d")))
 end
 
@@ -841,7 +852,7 @@ function M.note(st, which)
   end
   if which == "dest_prev"  then return M.pattern_note(st, "PREVIEW_PATTERN") end
   if which == "dest_clean" then
-    if not st.ui.RENDER_CLEAN_TOO then return "（「透かし無しの版も書き出す」を入れたときだけ出ます）" end
+    if not st.ui.RENDER_CLEAN_TOO then return "（「透かしなし」を入れたときだけ出ます）" end
     return M.pattern_note(st, "DEFAULT_PATTERN")
   end
   if which == "dest_hw"      then return M.pattern_note(st, "HW_PATTERN") end
@@ -915,13 +926,20 @@ function M.gate(st)
     end
   end
   if st.tab == "preview" then
-    if not st.detect.preview_track then
-      return false, ("『%s』という名前のトラックがありません。MASTERの外側に作ってください。")
-        :format(def.PREVIEW_TRACK_NAME)
+    -- v2.10.0: 「透かしあり」「透かしなし」のどちらかは要る。透かしのトラックは「透かしあり」のときだけ要る。
+    local marked, clean = st.ui.RENDER_MARKED ~= false, st.ui.RENDER_CLEAN_TOO == true
+    if not marked and not clean then
+      return false, "「透かしあり」か「透かしなし」のどちらかにチェックを入れてください。"
     end
-    if (st.detect.preview_items or 0) == 0 then
-      return false, ("『%s』トラックに波形（アイテム）がありません。透かしを置いてください。")
-        :format(def.PREVIEW_TRACK_NAME)
+    if marked then
+      if not st.detect.preview_track then
+        return false, ("『%s』という名前のトラックがありません。MASTERの外側に作ってください。")
+          :format(def.PREVIEW_TRACK_NAME)
+      end
+      if (st.detect.preview_items or 0) == 0 then
+        return false, ("『%s』トラックに波形（アイテム）がありません。透かしを置いてください。")
+          :format(def.PREVIEW_TRACK_NAME)
+      end
     end
   end
   return true, nil
@@ -1278,6 +1296,8 @@ function M.done_text(cfg, j)
   else
     for _, f in ipairs(j.produced) do t[#t + 1] = f end
   end
+  -- v2.10.0: ファイル一覧のすぐ下に、SWS スナップショットの1行（2mix Render / 2mix Preview）
+  if j.snapshot_line then t[#t + 1] = j.snapshot_line end
   if cfg.TAB == "para" then
     t[#t + 1] = ""
     if j.chain_dir then

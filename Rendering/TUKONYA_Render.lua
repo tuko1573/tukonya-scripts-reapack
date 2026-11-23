@@ -24,7 +24,7 @@ local Model = dofile(SCRIPT_DIR .. "tukonya_render_model.lua")
 local S     = Model.S
 local Store = Model.Store
 
-local VERSION = "2.9.1"            -- 配布物の版。窓の見出しに出る
+local VERSION = "2.10.0"           -- 配布物の版。窓の見出しに出る
 local NAME    = "TUKONYA RENDER"
 local TITLE   = NAME .. "  v" .. VERSION   -- 窓の見出し（ImGuiの窓の名前でもある）
 local NS      = "TUKONYA_RENDER"
@@ -148,6 +148,8 @@ local function do_run()
   app.result = res
   app.cfg = cfg
   app.view = "done"
+  -- v2.10.0: SWS スナップショットの窓が前に出る・閉じることがあるので、この窓を手前へ戻す
+  if res and res.job and res.job.snap_result then app.refocus = true end
   if app.autorun then
     -- 無人試験の合図。窓を開けたまま、外（試験台）に終わったことを伝える
     local text
@@ -627,6 +629,11 @@ local function draw_done(ctx)
         end
       end
     end
+    -- v2.10.0: SWS スナップショットの1行（作った名前／「Mix 7 ＝ mix2_03」／作っていない理由）。オフのときは出ない。
+    if j.snapshot_line and not (res and (res.err or res.aborted)) then
+      ImGui.Dummy(ctx, 1, 4)
+      ImGui.TextWrapped(ctx, j.snapshot_line)
+    end
     if j.chain_dir then
       ImGui.SeparatorText(ctx, "MASTERのプラグイン設定")
       ImGui.SetNextItemWidth(ctx, -1)
@@ -735,6 +742,10 @@ local function frame()
     ImGui.SetNextWindowFocus(ctx)
   end
   -- 無人試験のときだけ「いつも手前」（他の REAPER や App の窓に隠れて写真に写らないため）
+  if app.refocus then
+    app.refocus = false
+    pcall(ImGui.SetNextWindowFocus, ctx)
+  end
   local wflags = 0
   if app.test_hook then
     local okt, tf = pcall(function() return ImGui.WindowFlags_TopMost end)

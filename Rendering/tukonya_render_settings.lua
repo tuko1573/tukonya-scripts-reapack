@@ -379,19 +379,27 @@ local COMMON = {
 }
 
 local PER_TAB = {
+  -- v2.10.0: 2mix Render / 2mix Preview の名前に $renderno（書き出し番号。この曲で書き出しに成功した回数＋1。
+  -- 01, 02, … 99, 100）を入れた。$renderno はこのスクリプトが REAPER に渡す前に置き換える（REAPER の
+  -- ワイルドカードではない）。
   mix2 = {
-    PAT_NODITHER    = "bounce/$project_$date_youtube_no_dither",   -- Pass U のWAV（納品物）
-    PAT_AAC         = "bounce/$project_$date_sample",              -- Pass U の副形式の最終的な名前
-    PAT_DITHERED    = "bounce/$project_$date_distribute_dithered", -- Pass D のWAV
-    DEFAULT_PATTERN = "bounce/$project_$date",                     -- ディザー無しのときの名前
+    SNAPSHOT_ON     = true,   -- v2.10.0: 書き出しのあと SWS スナップショットを残す（タブごとの設定）
+    PAT_NODITHER    = "bounce/$project_$renderno_$date_youtube_no_dither",   -- Pass U のWAV（納品物）
+    PAT_AAC         = "bounce/$project_$renderno_$date_sample",              -- Pass U の副形式の最終的な名前
+    PAT_DITHERED    = "bounce/$project_$renderno_$date_distribute_dithered", -- Pass D のWAV
+    DEFAULT_PATTERN = "bounce/$project_$renderno_$date",                     -- ディザー無しのときの名前
   },
   preview = {
+    SNAPSHOT_ON        = true,   -- v2.10.0: 書き出しのあと SWS スナップショットを残す（タブごとの設定）
     PREVIEW_TRACK_NAME = "PREVIEWONLY",
-    PREVIEW_PATTERN    = "bounce/$project_$date_sample",                -- 透かし版（Pass D）の名前
+    PREVIEW_PATTERN    = "bounce/$project_$renderno_$date_sample",      -- 透かし版（Pass D）の名前
     PREVIEW_TMP_U      = "bounce/_tmp_undith_$project_$date_sample",    -- Pass U（副形式を取るためだけ）
-    DEFAULT_PATTERN    = "bounce/$project_$date",                       -- クリーン版の名前
+    DEFAULT_PATTERN    = "bounce/$project_$renderno_$date",             -- クリーン版の名前
     CLEAN_TMP_U        = "bounce/_tmp_undith_$project_$date",           -- クリーン版の Pass U
-    RENDER_CLEAN_TOO   = false,  -- true なら透かし無しの版も先に書き出す
+    -- v2.10.0: 窓の「透かしあり」「透かしなし」の2つのチェック。どちらか1つ以上が要る。
+    -- RENDER_CLEAN_TOO は「透かしなし」（キーの名前は昔のまま。昔の true は、あり・なしの両方になる）。
+    RENDER_MARKED      = true,   -- 「透かしあり」の版を書き出す
+    RENDER_CLEAN_TOO   = false,  -- 「透かしなし」の版を書き出す
     DUCK_DB            = -12.0,  -- 本編を下げる量
     DUCK_PRE           = 0.100,  -- 声の何秒手前で下げ切るか
     DUCK_FADE_IN       = 0.150,  -- 下げるフェード時間
@@ -474,6 +482,64 @@ function M.defaults(tab)
   for k, v in pairs(COMMON) do t[k] = deepcopy(v) end
   for k, v in pairs(per)    do t[k] = deepcopy(v) end
   return t
+end
+
+-- ===========================================================================
+-- 書き出し番号（v2.10.0）。$renderno を REAPER に渡す前に置き換える
+-- ===========================================================================
+M.RUN_TOKEN = "$renderno"
+
+-- 番号の文字。2桁（01..99）、100 からは桁なりに。
+function M.run_label(n)
+  n = math.floor(tonumber(n) or 0)
+  if n < 0 then n = 0 end
+  return (n < 100) and string.format("%02d", n) or tostring(n)
+end
+
+-- パターンの $renderno を label に置き換える（直後が英字でないときだけ。$song と同じ決まり）
+function M.fill_run_token(pattern, label)
+  if type(pattern) ~= "string" then return pattern end
+  return (pattern:gsub("%$renderno%f[%A]", function() return tostring(label) end))
+end
+
+-- 古い既定の名前（v2.9.1 まで）→ 新しい既定。保存してあった値がこの文字と完全に同じときだけ新しい既定へ移す。
+-- 変えてある名前には触らない（その名前には番号が付かないだけ）。
+M.OLD_RUN_PATTERNS = {
+  mix2 = {
+    PAT_NODITHER    = { "bounce/$project_$date_youtube_no_dither",   "bounce/$project_$renderno_$date_youtube_no_dither" },
+    PAT_AAC         = { "bounce/$project_$date_sample",              "bounce/$project_$renderno_$date_sample" },
+    PAT_DITHERED    = { "bounce/$project_$date_distribute_dithered", "bounce/$project_$renderno_$date_distribute_dithered" },
+    DEFAULT_PATTERN = { "bounce/$project_$date",                     "bounce/$project_$renderno_$date" },
+  },
+  preview = {
+    PREVIEW_PATTERN = { "bounce/$project_$date_sample", "bounce/$project_$renderno_$date_sample" },
+    DEFAULT_PATTERN = { "bounce/$project_$date",        "bounce/$project_$renderno_$date" },
+  },
+}
+-- t（保存してあった値の表。nil 可）の写しを返す。t は書き換えない。
+function M.migrate_run_patterns(tab, t)
+  local map = M.OLD_RUN_PATTERNS[tab]
+  if not map or type(t) ~= "table" then return t end
+  local out
+  for k, pair in pairs(map) do
+    if t[k] == pair[1] then
+      out = out or deepcopy(t)
+      out[k] = pair[2]
+    end
+  end
+  return out or t
+end
+
+-- SWS スナップショットの名前: プロジェクト名（.RPP を除く）の最後の「_」より後ろ ＋「_」＋ 番号。
+-- 「_」が無ければ名前ぜんぶ。名前が空（未保存）なら untitled。" と制御文字は SWS の保存形式を壊すので _ にする。
+function M.snapshot_name(projname, n)
+  local name = tostring(projname or ""):gsub("\\", "/"):match("([^/]*)$") or ""
+  name = name:gsub("%.[Rr][Pp][Pp]$", "")
+  if name == "" then name = "untitled" end
+  local tail = name:match("^.*_([^_]*)$")
+  local base = (tail and tail ~= "") and tail or name
+  base = base:gsub('["%c]', "_")
+  return base .. "_" .. M.run_label(n)
 end
 
 -- ===========================================================================

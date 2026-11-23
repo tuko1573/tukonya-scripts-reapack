@@ -23,7 +23,12 @@
 local DIR = debug.getinfo(1, "S").source:match("@(.*[/\\])") or ""
 local S = dofile(DIR .. "tukonya_render_settings.lua")
 
-local C = { DIR = DIR, Settings = S, VERSION = "2.9.1" }
+local C = { DIR = DIR, Settings = S, VERSION = "2.10.0" }
+
+-- v2.10.0: 書き出し番号（Store）と SWS スナップショット（Snapshot）。どちらも2mix Render / 2mix Preview だけが使う。
+local Store = dofile(DIR .. "tukonya_render_store.lua")
+local Snap  = dofile(DIR .. "tukonya_render_snapshot.lua")
+C.Store, C.Snap = Store, Snap
 
 -- 親経由パラ（規則4）で「音が混じるかもしれない」ときに、窓からの実行だけ
 -- 「続行／キャンセル」を出すかどうか。将来やめるときはここを false にする。
@@ -1254,7 +1259,9 @@ function Job:cleanup()
   -- MASTERボリューム・エンベロープ（透かし版だけが触る）
   if self.ENV then
     if not self.ENV_CREATED and self.ENV_CHUNK then
-      reaper.SetEnvelopeStateChunk(self.ENV, self.ENV_CHUNK, false)
+      if not reaper.SetEnvelopeStateChunk(self.ENV, self.ENV_CHUNK, false) then
+        self:warn("MASTERのボリューム・エンベロープを元に戻せませんでした。ダッキングの点が残っている恐れがあるので、MASTERのボリュームのレーンを確かめてください。")
+      end
     elseif self.ENV_CREATED then
       reaper.DeleteEnvelopePointRange(self.ENV, -1.0, 1e9)
       reaper.Envelope_SortPoints(self.ENV)
@@ -1358,7 +1365,8 @@ function Job:prepare()
   end
   if cfg.PREVIEW_TRACK_NAME then
     self.PREVIEW = find_track_by_name(cfg.PREVIEW_TRACK_NAME)
-    if not self.PREVIEW then
+    -- v2.10.0: 「透かしあり」を書き出さない（透かしなしだけ）ときは、このトラックが無くてもよい
+    if not self.PREVIEW and cfg.RENDER_MARKED ~= false then
       abort(("『%s』トラックが見つかりません。MASTERの外側に作ってください。"):format(cfg.PREVIEW_TRACK_NAME))
     end
   end
@@ -1516,6 +1524,72 @@ function Job:resolve_range()
 end
 
 -- ===========================================================================
+-- v2.10.0: 書き出し番号・失敗した回の片付け・SWS スナップショット（2mix Render / 2mix Preview だけ）
+-- ===========================================================================
+-- この回の番号を決める（これまでの成功回数 ＋ 1）。決めるだけで、確定は成功したあと（C.run）。
+-- 戻り値: 番号の文字（01 …）
+function Job:begin_run_number()
+  local ok, n = pcall(function() return (Store.run_peek()) end)
+  if not ok then
+    self:warn("書き出し番号を読めなかったので 01 にしました（この回の番号は記録しません）: " .. tostring(n))
+    self.run_no, self.run_nocommit = 1, true
+  else
+    self.run_no = (tonumber(n) or 0) + 1
+  end
+  self.run_label = S.run_label(self.run_no)
+  self:log("書き出し番号: %s（これまでの成功 %d 回 ＋ 1）", self.run_label, self.run_no - 1)
+  return self.run_label
+end
+function Job:fill_run(pattern) return S.fill_run_token(pattern, self.run_label) end
+
+-- 「この回の出力はぜんぶ確かめた」の条件。1つでも欠けたら中断（＝番号は進めず、この回が作った物は片付く）。
+-- 副形式（AAC/MP3）だけの失敗は今までどおり注意に留める（WAV は残し、番号も進める）。
+function Job:require_outputs()
+  if #self.produced == 0 then abort("書き出されたファイルがありません。") end
+  local ext2 = self.FMT2_EXT and self.FMT2_EXT:lower() or nil
+  for _, p in ipairs(self.produced) do
+    local f = io.open(p, "rb")
+    local size = f and f:seek("end") or nil
+    if f then f:close() end
+    local is_secondary = ext2 and p:lower():sub(-#ext2) == ext2
+    if (not size or size <= 0) and is_secondary then
+      self:warn(("副形式のファイルが見つかりませんでした（WAV は書き出せています）: %s"):format(p))
+    elseif not size or size <= 0 then
+      abort(("書き出したファイルを確かめられませんでした（無いか、空です）。\n%s"):format(p))
+    end
+  end
+  self.outputs_verified = true
+end
+
+-- 失敗・中断した回が作ったファイルだけを片付ける。対象は「この回が書く予定だった最終的な名前」
+-- （resolve_suffix が、どれも実行前には無いことを確かめた一覧 final_set）のうち、実行前に無かった物。
+-- 前の回のファイル・ほかのファイルは名前が違うか、実行前からあったので対象にならない。
+function Job:remove_partial()
+  if not self.final_set then return end
+  for _, p in ipairs(self.final_set) do
+    if self.final_pre[p] == false and reaper.file_exists(p) then
+      self:log("失敗した回が作ったファイルを片付ける: %s", p)
+      remove_with_peaks(self, p)
+    end
+  end
+end
+
+-- SWS スナップショットを1つ作る（書き出しも後片付けも番号の確定も済んだあとに呼ぶ）。失敗しても書き出しの結果は変えない。
+function Job:make_snapshot()
+  local ctx = Store.run_context()
+  local name = S.snapshot_name(ctx.name, self.run_no)
+  local ok, res = pcall(Snap.create, name)
+  if not ok then
+    res = { state = "unverified",
+      reason = "作る途中でエラーが出ました。作られたかどうかは SWS の一覧で確かめてください（作り直しはしません）: " .. tostring(res) }
+  end
+  self.snap_result = res
+  self.snapshot_line = Snap.line(res)
+  self:log_plain(self.snapshot_line)
+  self:log("SWS スナップショット: %s%s", res.state, res.name and (" " .. res.name) or "")
+end
+
+-- ===========================================================================
 -- 同名ファイルの自動連番
 -- ===========================================================================
 -- 同じ日に2回実行すると、固定名にREAPERの「同名ファイルの扱い」（確認の窓、または
@@ -1530,10 +1604,20 @@ function Job:resolve_suffix(build_set)
     return false
   end
   local n = 0
-  while any_exists(build_set((n == 0) and "" or ("-" .. string.format("%03d", n)))) do
+  local set = build_set("")
+  while any_exists(set) do
     n = n + 1
     if n > 999 then
       abort("同名ファイルの空き番号が見つかりませんでした（-001〜-999 すべて使用中です）。")
+    end
+    set = build_set("-" .. string.format("%03d", n))
+  end
+  -- v2.10.0: この回が書く予定の最終的な名前の一覧（どれもまだ無い）。失敗したとき、この回が作った物だけを片付けるために控える。
+  self.final_set, self.final_pre = {}, {}
+  for _, p in ipairs(set) do
+    if p and p ~= "" then
+      self.final_set[#self.final_set + 1] = p
+      self.final_pre[p] = reaper.file_exists(p) and true or false
     end
   end
   if n > 0 then self:log("同じ名前のファイルがあるので連番を付ける: -%03d", n) end
@@ -2330,8 +2414,9 @@ function FLOW.mix2(j)
   local cfg = j.S
   j:resolve_range()
 
+  j:begin_run_number()   -- v2.10.0: $renderno を、REAPER に渡す前にこの回の番号へ置き換える
   local PAT_U, PAT_AAC, PAT_D, PAT_DEF =
-    cfg.PAT_NODITHER, cfg.PAT_AAC, cfg.PAT_DITHERED, cfg.DEFAULT_PATTERN
+    j:fill_run(cfg.PAT_NODITHER), j:fill_run(cfg.PAT_AAC), j:fill_run(cfg.PAT_DITHERED), j:fill_run(cfg.DEFAULT_PATTERN)
   local suffix = j:resolve_suffix(function(suf)
     local set = {}
     local wav_u = j:resolve_target(PAT_U .. suf, j.FMT_MASTER)
@@ -2364,18 +2449,29 @@ function FLOW.mix2(j)
     j:set_master_original()
   end
   j:render_deliverable({ u = PAT_U, keep_u = true, aac = PAT_AAC, d = PAT_D })
+  j:require_outputs()   -- v2.10.0: ぜんぶ確かめられたときだけ成功（番号の確定は C.run）
 end
 
 -- ----- 2mix Preview（旧 TUKO_2Stage_Preview_Render）-----
+-- v2.10.0: 「透かしあり」(RENDER_MARKED) と「透かしなし」(RENDER_CLEAN_TOO) を、チェックした版だけ書き出す。
+--   「透かしなし」だけのときは、PREVIEWONLY トラックもそのアイテムも要らない。
 function FLOW.preview(j)
   local cfg = j.S
-  local spans = j:build_duck_spans()
-  if #spans == 0 then
-    abort(("『%s』トラックに波形（アイテム）がありません。透かしを置いてから実行してください。"):format(cfg.PREVIEW_TRACK_NAME))
+  local marked, clean = cfg.RENDER_MARKED ~= false, cfg.RENDER_CLEAN_TOO == true
+  if not marked and not clean then
+    abort("「透かしあり」「透かしなし」のどちらにもチェックが入っていません。どちらか1つ以上にチェックを入れてください。")
+  end
+  local spans = {}
+  if marked then
+    spans = j:build_duck_spans()
+    if #spans == 0 then
+      abort(("『%s』トラックに波形（アイテム）がありません。透かしを置いてから実行してください。"):format(cfg.PREVIEW_TRACK_NAME))
+    end
   end
   j:resolve_range()
 
-  local PAT_PREVIEW, PAT_DEF = cfg.PREVIEW_PATTERN, cfg.DEFAULT_PATTERN
+  j:begin_run_number()   -- $renderno を、REAPER に渡す前にこの回の番号へ置き換える（ふたつの版で同じ番号）
+  local PAT_PREVIEW, PAT_DEF = j:fill_run(cfg.PREVIEW_PATTERN), j:fill_run(cfg.DEFAULT_PATTERN)
   local suffix = j:resolve_suffix(function(suf)
     local set = {}
     local function add_final(p)
@@ -2383,13 +2479,13 @@ function FLOW.preview(j)
       set[#set + 1] = wav
       set[#set + 1] = j:secondary(wav)
     end
-    if cfg.RENDER_CLEAN_TOO then add_final(PAT_DEF) end
-    add_final(PAT_PREVIEW)
+    if clean then add_final(PAT_DEF) end
+    if marked then add_final(PAT_PREVIEW) end
     return set
   end)
   PAT_PREVIEW, PAT_DEF = PAT_PREVIEW .. suffix, PAT_DEF .. suffix
 
-  local pat_dir = PAT_PREVIEW:match("^(.-)/[^/]*$") or ""
+  local pat_dir = (marked and PAT_PREVIEW or PAT_DEF):match("^(.-)/[^/]*$") or ""
   local tmp_pattern = (pat_dir == "") and cfg.TMP_PREFIX or (pat_dir .. "/" .. cfg.TMP_PREFIX)
   local projlen = reaper.GetProjectLength(0)
 
@@ -2398,8 +2494,8 @@ function FLOW.preview(j)
   reaper.GetSetProjectInfo(0, "RENDER_BOUNDSFLAG", j.bounds_flag, true)
 
   -- PREVIEWONLYはMASTERの外側→REAPERマスター直。鳴っているとハード通しの素材に
-  -- 焼き付いてしまうので、ハード通しの前に必ずミュートしておく。
-  reaper.SetMediaTrackInfo_Value(j.PREVIEW, "B_MUTE", 1)
+  -- 焼き付いてしまうので、ハード通しの前に必ずミュートしておく（トラックがあれば、「透かしなし」だけのときも）。
+  if j.PREVIEW then reaper.SetMediaTrackInfo_Value(j.PREVIEW, "B_MUTE", 1) end
 
   if j.hw_mode then
     j:hardware_pass(tmp_pattern, false)
@@ -2408,28 +2504,56 @@ function FLOW.preview(j)
   end
 
   -- クリーン版（任意。透かし無し・ダッキング無し・通常のファイル名）
-  if cfg.RENDER_CLEAN_TOO then
+  if clean then
     j:render_deliverable({ u = cfg.CLEAN_TMP_U, keep_u = false,
                            aac = PAT_DEF, d = PAT_DEF, fallback = PAT_DEF })
   end
 
   -- 透かし版（声を重ね、ダッキングを書き、_sample名）
-  reaper.SetMediaTrackInfo_Value(j.PREVIEW, "B_MUTE", 0)
-  j.ENV = reaper.GetTrackEnvelopeByChunkName(j.MASTER, "<VOLENV2")
-  if not j.ENV then
-    reaper.SetOnlyTrackSelected(j.MASTER)
-    reaper.Main_OnCommand(40406, 0) -- Toggle track volume envelope visible（作成）
+  if marked then
+    -- [v2100試験用の注入点: 透かし版の前]
+    reaper.SetMediaTrackInfo_Value(j.PREVIEW, "B_MUTE", 0)
     j.ENV = reaper.GetTrackEnvelopeByChunkName(j.MASTER, "<VOLENV2")
-    j.ENV_CREATED = true
+    if not j.ENV then
+      reaper.SetOnlyTrackSelected(j.MASTER)
+      reaper.Main_OnCommand(40406, 0) -- Toggle track volume envelope visible（作成）
+      j.ENV = reaper.GetTrackEnvelopeByChunkName(j.MASTER, "<VOLENV2")
+      j.ENV_CREATED = true
+    end
+    if not j.ENV then abort("MASTERのボリューム・エンベロープを用意できませんでした。") end
+    if not j.ENV_CREATED then
+      local ok, chunk = reaper.GetEnvelopeStateChunk(j.ENV, "", false)
+      if ok and chunk and chunk ~= "" then j.ENV_CHUNK = chunk end
+      -- v2.10.0: 元の状態を控えられないなら、点を消す前に止める（あとで戻せなくなるので）
+      if not j.ENV_CHUNK then abort("MASTERのボリューム・エンベロープの今の状態を控えられませんでした。中断します。") end
+    end
+    -- 設定は変えず、ダッキングが効かない恐れだけ知らせる
+    if reaper.GetGlobalAutomationOverride and reaper.GetGlobalAutomationOverride() == 5 then
+      j:warn("REAPER 全体の「すべてのエンベロープをバイパス」がオンなので、透かし版のダッキングが効いていない恐れがあります。")
+    end
+    if reaper.CountAutomationItems and reaper.CountAutomationItems(j.ENV) > 0 then
+      j:warn("MASTERのボリューム・エンベロープにオートメーションアイテムがあるので、透かし版のダッキングが崩れている恐れがあります。")
+    end
+    j:write_duck_automation(spans, projlen)
+    -- v2.10.0: エンベロープが「ある・オフ（ACT 0）」だとダッキングが効かない（v2.9.1 からの不具合）。
+    -- 点を書いたあとでオンにする（点が無いうちにオンにしても REAPER 7.83 はオフに戻す。MBP 実測）。
+    -- 元の状態（オフ・元の点）は後片付けで ENV_CHUNK ごと戻る。
+    do
+      local NG = "MASTERのボリューム・エンベロープがオンか確かめられず、透かし版のダッキングが効かない恐れがあるため中断します。"
+      local function act_of(ch) return ch and ch:match("\nACT (%d)") end   -- 最初の ACT 行（エンベロープ自身の物）
+      local okc, cur = reaper.GetEnvelopeStateChunk(j.ENV, "", false)
+      if not (okc and act_of(cur)) then abort(NG) end
+      if act_of(cur) == "0" then
+        reaper.SetEnvelopeStateChunk(j.ENV, (cur:gsub("\nACT 0", "\nACT 1", 1)), false)
+        local okr, back = reaper.GetEnvelopeStateChunk(j.ENV, "", false)
+        if not (okr and act_of(back) == "1") then abort(NG) end
+        j:log("MASTERのボリューム・エンベロープがオフだったので、書き出しのあいだだけオンにした")
+      end
+    end
+    j:render_deliverable({ u = cfg.PREVIEW_TMP_U, keep_u = false,
+                           aac = PAT_PREVIEW, d = PAT_PREVIEW, fallback = PAT_PREVIEW })
   end
-  if not j.ENV then abort("MASTERのボリューム・エンベロープを用意できませんでした。") end
-  if not j.ENV_CREATED then
-    local ok, chunk = reaper.GetEnvelopeStateChunk(j.ENV, "", false)
-    if ok then j.ENV_CHUNK = chunk end
-  end
-  j:write_duck_automation(spans, projlen)
-  j:render_deliverable({ u = cfg.PREVIEW_TMP_U, keep_u = false,
-                         aac = PAT_PREVIEW, d = PAT_PREVIEW, fallback = PAT_PREVIEW })
+  j:require_outputs()   -- ぜんぶ確かめられたときだけ成功（番号の確定は C.run）
 end
 
 -- ----- Para + 2mix（旧 TUKONYA_MasterParaRender）-----
@@ -4573,6 +4697,22 @@ function C.run(cfg)
   end)
 
   cleanup(j)
+  -- v2.10.0（2mix Render / 2mix Preview だけ）: 失敗・中断した回は、その回が作ったファイルを片付ける（番号は進めない）。
+  -- 成功した回だけ、番号を確定する（この曲で書き出しに成功した回数）。
+  local numbered = (cfg.TAB == "mix2" or cfg.TAB == "preview") and j.run_no ~= nil
+  if numbered and not pok then
+    local rok, rerr = pcall(function() j:remove_partial() end)
+    if not rok then j:warn("失敗した回のファイルを片付けるときにエラーが出ました: " .. tostring(rerr)) end
+  end
+  if numbered and pok and j.outputs_verified and not j.run_nocommit then
+    local cok, cerr = pcall(Store.run_commit, j.run_no)
+    if cok then
+      j.run_committed = true
+      j:log("書き出し番号 %s を確定した", j.run_label)
+    else
+      j:warn("書き出し番号を記録できませんでした: " .. tostring(cerr))
+    end
+  end
   -- Pass M のピーク（.reapeaks）が後片付けのあとで書かれることがあるので、最後にもう一度消す
   for _, pk in ipairs(j.passm_peaks or {}) do pcall(os.remove, pk) end
   -- Mastering: 中身が空になった作業フォルダを消す（空でなければ消えない）
@@ -4587,6 +4727,19 @@ function C.run(cfg)
   if pok then
     res.ok = true
     j:log("結果: 完了")
+    -- v2.10.0: 状態をぜんぶ戻したあとに、SWS スナップショットを1つ（失敗しても書き出しの結果は変えない）
+    if numbered then
+      if cfg.SNAPSHOT_ON == false then
+        -- 設定でオフ: 作らない。完了画面には何も出さず、実行記録にだけ残す
+        j:log_plain("SWS スナップショットは作っていません（オフ）")
+      elseif j.run_committed then
+        j:make_snapshot()
+      else
+        j.snap_result = { state = "skipped", reason = "書き出し番号を記録できなかったため" }
+        j.snapshot_line = Snap.line(j.snap_result)
+        j:log_plain(j.snapshot_line)
+      end
+    end
   elseif type(err) == "table" and err.tukonya_abort then
     res.aborted = err.tukonya_abort
     j:log("結果: 中断 " .. tostring(res.aborted))
