@@ -335,6 +335,20 @@
         <link rel="website">https://github.com/tuko1573/tukonya-scripts-reapack</link>
       </metadata>
     </reapack>
+    <reapack name="TUKONYA_MixMap.lua" type="script" desc="TUKONYA Mix Map">
+      <version name="1.0.0" author="tuko" time="2026-11-27T12:00:00Z">
+        <changelog><![CDATA[初版。各トラックの実際の音を測り、左右×音域×奥行きの部屋に帯域ごとの線で並べて見せる（見るだけ、音には何もしない）。使い方: アクションから「TUKONYA_MixMap」を実行して窓を開き、測りたいトラックやフォルダを選んで「選択トラックに入れる」。再生すると線が動く。横から見た部屋を右クリックすると、その高さで鳴っている上位のトラック名が出る。ReaImGui 0.10 以降が必要。Mac で確認済み、Windows は未確認。]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA_MixMap.lua</source>
+        <source file="mixmap/io.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/mixmap/io.lua</source>
+        <source file="mixmap/model.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/mixmap/model.lua</source>
+        <source file="mixmap/draw.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/mixmap/draw.lua</source>
+        <source type="effect" file="TUKONYA_MixMap_Meter.jsfx">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Utility/TUKONYA_MixMap_Meter.jsfx</source>
+      </version>
+      <metadata>
+        <description><![CDATA[{\rtf1 {\fonttbl {\f0 Helvetica;}} \f0\fs20 TUKONYA Mix Map: measures what each track actually sounds like and draws it in a room of left/right x frequency x depth, one line per band (display only, it does not change the sound). Run TUKONYA_MixMap, select tracks or folders and press the insert button to add the meter JSFX; play to see the map. Right-click the side view to list the tracks playing at that height. Needs ReaImGui 0.10 or later. Verified on macOS; Windows not yet tested.}]]></description>
+        <link rel="website">https://github.com/tuko1573/tukonya-scripts-reapack</link>
+      </metadata>
+    </reapack>
   </category>
   <metadata>
     <description><![CDATA[{\rtf1 {\fonttbl {\f0 Helvetica;}} \f0\fs20 Tukonya Scripts: JSFX effects and ReaScripts for REAPER by tuko. Free for personal use, no warranty.}]]></description>

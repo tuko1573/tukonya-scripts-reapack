@@ -25,6 +25,7 @@ Free for personal use. No warranty.
 | TUKONYA Folder Link | ReaScript (Utility) | Keeps folder open/closed state in sync between the arrange view (TCP) and the mixer, both ways. Includes Folder Toggle (open/close the selected track's folder in both views, for a shortcut). The (Install Startup) action starts the watcher with REAPER. Verified on macOS; Windows not yet tested. |
 | TUKONYA Container Link | ReaScript + JSFX (Utility) | Links REAPER containers across tracks: containers that share a Link Ch keep the same FX order, parameters, bypass, GUI-only settings, automation and name, whichever track you edit. One Undo/Redo moves them all. Insert the marker JSFX inside each container, run the watcher script; the (Install Startup) action starts it with REAPER. Needs REAPER 7.79+ and js_ReaScriptAPI. Verified on macOS; Windows not yet tested. |
 | TUKONYA Reference Track | ReaScript + JSFX (Utility) | Swaps the master output 1/2 for a reference track sent to another channel pair, with one shortcut, without solo or mute; shows a big REFERENCE window while the reference plays. Setup picks a free channel pair and adds the stock IX router plus the Eater JSFX to the monitoring FX. Needs REAPER 7.79+. Verified on macOS; Windows not yet tested. README (Japanese): `README_Reference.md`. |
+| TUKONYA Mix Map | ReaScript + JSFX (Utility) | Measures what each track actually sounds like and draws it in a room of left/right x frequency x depth, one line per band (display only). Insert the meter JSFX from the window, then play. Right-click the side view to list the tracks playing at that height. Needs ReaImGui 0.10+. Verified on macOS; Windows not yet tested. |
 | TUKONYA JP LangPack Updater | ReaScript (Language) | Keeps the Japanese REAPER language pack up to date, checking once a day at startup. Does nothing if REAPER runs in English. |
 
 More to come.
@@ -45,4 +46,5 @@ REAPER用のJSFXエフェクトとReaScriptの配布元です。個人利用は�
 - TUKONYA Folder Link installs to `Scripts/Tukonya Scripts/Utility/` (its README is `README_FolderLink.md`).
 - TUKONYA Container Link installs to `Scripts/Tukonya Scripts/Utility/` (its README is `README_ContainerLink.md`), and its marker JSFX to `Effects/Tukonya Scripts/Utility/`.
 - TUKONYA VST3 Only Master installs to `Scripts/Tukonya Scripts/Utility/` too (its README is `README_VST3OnlyMaster.md`).
+- TUKONYA Mix Map installs to `Scripts/Tukonya Scripts/Utility/` (its parts in `mixmap/`), and its meter JSFX to `Effects/Tukonya Scripts/Utility/`.
 - TUKONYA Reference Track installs to `Scripts/Tukonya Scripts/Utility/` (its README is `README_Reference.md`), and its Eater JSFX to `Effects/Tukonya Scripts/Utility/`.

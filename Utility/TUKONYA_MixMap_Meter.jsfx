@@ -1,0 +1,285 @@
+desc:TUKONYA MixMap Meter
+//tags: analysis meter
+// mix-map v1 measuring JSFX (SPEC.md section 3). Pass-through, zero latency.
+// Measures per-band x 17-cell left/right position distribution into gmem (SPEC section 2, frozen layout).
+// Two grids per instance: the display grid (detector chosen by the window: Peak / RMS) and, since 2026-11-04,
+// a fixed masking grid (same bands x 17 cells, power, one-pole RMS of 50 ms, independent of the window's setting).
+options:gmem=TukoMixMap
+
+slider1:slot=-1<-1,255,1>-slot
+// role (2026-11-05, read only by the Lua window; the DSP does not use it): 0 = end of the chain ("post", default, what
+// is drawn), 1 = head of a folder's chain ("pre": the folder's summed input, for the bus ratio)
+slider2:role=0<0,1,1>-role
+
+in_pin:left input
+in_pin:right input
+out_pin:left output
+out_pin:right output
+
+@init
+// state survives transport start; sample-rate changes are handled in the block section
+ext_noinit = 1;
+
+// ---- local memory map (prefix mmI_ = layout constants) ----
+// FFT buffer must sit at offset 0 so it never crosses a 65536-item boundary (max 32768-point complex = 65536 items)
+mmI_fft   = 0;
+mmI_ringL = 65536;    // 32768
+mmI_ringR = 98304;    // 32768
+mmI_winL  = 131072;   // 32768
+mmI_winS  = 163840;   // 8192
+mmI_eLb   = 172032;   // 16384 each: long list bin / cell base / weight
+mmI_eLc   = 188416;
+mmI_eLw   = 204800;
+mmI_eSb   = 221184;
+mmI_eSc   = 237568;
+mmI_eSw   = 253952;
+mmI_det   = 270336;   // 256
+mmI_acc   = 270592;   // 256
+mmI_lh    = 270848;   // 6 band-stage edges (Listenhub)
+mmI_msk   = 271104;   // 256: masking grid (RMS 50 ms of the same cell powers)
+mmI_lh[0] = 20;
+mmI_lh[1] = 60;
+mmI_lh[2] = 240;
+mmI_lh[3] = 900;
+mmI_lh[4] = 5000;
+mmI_lh[5] = 20000;
+
+// block-level state (prefix mmB_), sample-level state (prefix mmS_)
+mmB_lsr = 0;      // last sample rate seen (0 = tables not built)
+mmB_ls = -2;      // last slot
+mmB_lsp = 0;      // last split
+mmB_dirty = 1;
+mmB_seen = 0;
+mmB_clk = 0;
+mmB_cnt = 0;
+mmB_on = 0;
+mmB_mask = 0;
+mmB_mc = 0;       // short-FFT updates since the masking grid was last written to gmem
+mmB_msb = 0;      // gmem address of this slot's masking grid
+mmB_rn = 1;
+mmB_hopL = 1024;
+mmB_hopS = 256;
+mmS_wp = 0;
+mmS_cl = 0;
+mmS_cs = 0;
+
+// ---- helpers (defined in the init section so every section can use them) ----
+// Build the bin->band weight list for bands b0..b1 of an nn-point FFT. Returns the entry count.
+// Each FFT bin [f-df/2, f+df/2] is shared among bands by overlap fraction.
+function mm_ents(b0, b1, nn, eb, ec, ew, sp)
+  local(b, st, j, lo, hi, df, k, k0, k1, fk, ov, n)
+  globals(mmI_lh, srate)
+(
+  df = srate / nn;
+  n = 0;
+  b = b0;
+  loop(b1 - b0 + 1,
+    st = floor(b / sp);
+    j = b - st * sp;
+    lo = mmI_lh[st] * (mmI_lh[st + 1] / mmI_lh[st]) ^ (j / sp);
+    hi = mmI_lh[st] * (mmI_lh[st + 1] / mmI_lh[st]) ^ ((j + 1) / sp);
+    k0 = max(1, floor(lo / df));
+    k1 = min(nn / 2 - 1, floor(hi / df) + 1);
+    k = k0;
+    while (k <= k1) (
+      fk = k * df;
+      ov = min(hi, fk + df * 0.5) - max(lo, fk - df * 0.5);
+      ov > 0 ? (
+        eb[n] = k;
+        ec[n] = b * 17;
+        ew[n] = ov / df;
+        n += 1;
+      );
+      k += 1;
+    );
+    b += 1;
+  );
+  n;
+);
+
+// One analysis step: window the latest nn samples, FFT (L = real, R = imaginary), split into
+// L/R spectra, distribute bin power over the 17 position cells, run the detector on cells c0..c1 (band*17 units).
+function mm_upd(nn, win, eb, ec, ew, en, nrm, c0, c1, hop)
+  local(j, idx, k, kk, a, b, c, d, pl, pr, ps, q, pos, ip, fr, cell, e, md, ca, cr, cm, tau, dt, x, dd)
+  globals(mmI_fft, mmI_ringL, mmI_ringR, mmI_acc, mmI_det, mmI_msk, mmB_mask, mmB_rn, mmS_wp, mmB_md, mmB_ta, mmB_tr, mmB_tv, srate)
+(
+  idx = mmS_wp - nn + mmB_rn;
+  j = 0;
+  loop(nn,
+    k = (idx + j) & mmB_mask;
+    mmI_fft[j * 2]     = mmI_ringL[k] * win[j];
+    mmI_fft[j * 2 + 1] = mmI_ringR[k] * win[j];
+    j += 1;
+  );
+  fft(mmI_fft, nn);
+  fft_permute(mmI_fft, nn);
+
+  j = c0;
+  loop(c1 - c0, mmI_acc[j] = 0; j += 1;);
+
+  e = 0;
+  loop(en,
+    k = eb[e];
+    kk = nn - k;
+    a = mmI_fft[k * 2];
+    b = mmI_fft[k * 2 + 1];
+    c = mmI_fft[kk * 2];
+    d = mmI_fft[kk * 2 + 1];
+    // XL = (Z[k] + conj(Z[N-k]))/2 , XR = (Z[k] - conj(Z[N-k]))/(2i)
+    pl = ((a + c) * (a + c) + (b - d) * (b - d)) * 0.25;
+    pr = ((b + d) * (b + d) + (a - c) * (a - c)) * 0.25;
+    ps = pl + pr;
+    ps > 0 ? (
+      q = (pr - pl) / ps;
+      pos = (q + 1) * 8;
+      ip = min(16, max(0, floor(pos)));
+      fr = pos - ip;
+      ip >= 16 ? fr = 0;
+      ps = ps * nrm * ew[e];
+      cell = ec[e] + ip;
+      mmI_acc[cell] += ps * (1 - fr);
+      ip < 16 ? mmI_acc[cell + 1] += ps * fr;
+    );
+    e += 1;
+  );
+
+  // detector: Peak (separate attack/release) or RMS (one time constant), on power per cell
+  dt = hop / srate;
+  tau = max(mmB_ta, 0) * 0.001;
+  ca = 1;
+  tau > 0 ? ca = 1 - exp(0 - dt / tau);
+  tau = max(mmB_tr, 0) * 0.001;
+  cr = 1;
+  tau > 0 ? cr = 1 - exp(0 - dt / tau);
+  mmB_md >= 0.5 ? (
+    tau = max(mmB_tv, 0) * 0.001;
+    ca = 1;
+    tau > 0 ? ca = 1 - exp(0 - dt / tau);
+    cr = ca;
+  );
+  // masking grid: always a plain one-pole RMS of 50 ms on the same cell power (not the window's setting)
+  cm = 1 - exp(0 - dt / 0.05);
+  j = c0;
+  loop(c1 - c0,
+    x = mmI_acc[j];
+    dd = mmI_det[j];
+    x > dd ? dd += ca * (x - dd) : dd += cr * (x - dd);
+    mmI_det[j] = dd;
+    mmI_msk[j] += cm * (x - mmI_msk[j]);
+    j += 1;
+  );
+);
+
+@block
+mmB_clk += samplesblock / srate;
+// detector settings written by the Lua window (read here: gmem[] is not usable inside user functions)
+mmB_md = gmem[3];
+mmB_ta = gmem[4];
+mmB_tr = gmem[5];
+mmB_tv = gmem[6];
+
+// sample-rate dependent sizes, windows, normalisation (also the first block after load)
+srate != mmB_lsr ? (
+  mmB_lsr = srate;
+  mmB_NL = 2 ^ min(15, max(4, floor(log(8192 * srate / 48000) / log(2) + 0.5)));
+  mmB_NS = 2 ^ min(13, max(4, floor(log(1024 * srate / 48000) / log(2) + 0.5)));
+  // hops: 75% overlap for the long FFT, 50% for the short one (halves the CPU of 87.5%/75%; SPEC 3)
+  mmB_hopL = mmB_NL / 4;
+  mmB_hopS = mmB_NS / 2;
+  mmB_rn = mmB_NL;
+  mmB_mask = mmB_NL - 1;
+  // Hann windows (periodic) and power normalisation: a full-scale L=R sine sums to 1.0 over all cells
+  mmB_w2 = 0;
+  mmB_j = 0;
+  loop(mmB_NL,
+    mmB_v = 0.5 - 0.5 * cos(2 * $pi * mmB_j / mmB_NL);
+    mmI_winL[mmB_j] = mmB_v;
+    mmB_w2 += mmB_v * mmB_v;
+    mmB_j += 1;
+  );
+  mmB_nrmL = 2 / (mmB_NL * mmB_w2);
+  mmB_w2 = 0;
+  mmB_j = 0;
+  loop(mmB_NS,
+    mmB_v = 0.5 - 0.5 * cos(2 * $pi * mmB_j / mmB_NS);
+    mmI_winS[mmB_j] = mmB_v;
+    mmB_w2 += mmB_v * mmB_v;
+    mmB_j += 1;
+  );
+  mmB_nrmS = 2 / (mmB_NS * mmB_w2);
+  mmB_j = 0;
+  loop(32768, mmI_ringL[mmB_j] = 0; mmI_ringR[mmB_j] = 0; mmB_j += 1;);
+  mmS_wp = 0; mmS_cl = 0; mmS_cs = 0;
+  mmB_dirty = 1;
+);
+
+// heartbeat watch (jsfx-eel2-pitfalls section 4): "moving" = value changed; first sighting does not count
+mmB_hb = gmem[1];
+mmB_seen ? (
+  mmB_hb != mmB_lhb ? ( mmB_lhb = mmB_hb; mmB_tch = mmB_clk; );
+) : (
+  mmB_seen = 1;
+  mmB_lhb = mmB_hb;
+  mmB_tch = -1000;
+);
+
+mmB_s = floor(slot + 0.5);
+(mmB_s < 0 || mmB_s > 255) ? mmB_s = -1;
+mmB_on = 0;
+mmB_s >= 0 ? (
+  mmB_base = 1024 + mmB_s * 512;
+  mmB_sp = max(1, min(3, floor(gmem[2] + 0.5)));
+  (mmB_s != mmB_ls || mmB_sp != mmB_lsp || mmB_dirty) ? (
+    // new slot, new split, or new sample rate: rebuild band tables and zero every cell
+    mmB_ls = mmB_s;
+    mmB_lsp = mmB_sp;
+    mmB_dirty = 0;
+    mmB_nb = 5 * mmB_sp;
+    mmB_enL = mm_ents(0, 2 * mmB_sp - 1, mmB_NL, mmI_eLb, mmI_eLc, mmI_eLw, mmB_sp);
+    mmB_enS = mm_ents(2 * mmB_sp, 5 * mmB_sp - 1, mmB_NS, mmI_eSb, mmI_eSc, mmI_eSw, mmB_sp);
+    mmB_c0L = 0;
+    mmB_c1L = 2 * mmB_sp * 17;
+    mmB_c0S = 2 * mmB_sp * 17;
+    mmB_c1S = 5 * mmB_sp * 17;
+    mmB_j = 0;
+    loop(256, mmI_det[mmB_j] = 0; mmI_acc[mmB_j] = 0; mmI_msk[mmB_j] = 0; mmB_j += 1;);
+    mmB_j = 0;
+    loop(255, gmem[mmB_base + 8 + mmB_j] = 0; mmB_j += 1;);
+    mmB_msb = 1024 + 256 * 512 + mmB_s * 256;     // masking grids sit after the slot table (SPEC section 2)
+    mmB_j = 0;
+    loop(255, gmem[mmB_msb + mmB_j] = 0; mmB_j += 1;);
+    mmB_mc = 0;
+  );
+  mmB_on = (mmB_clk - mmB_tch) < 1.0;
+  gmem[mmB_base] = mmB_clk;
+  gmem[mmB_base + 2] = srate;
+  gmem[mmB_base + 3] = mmB_sp;
+);
+
+@sample
+mmI_ringL[mmS_wp] = spl0;
+mmI_ringR[mmS_wp] = spl1;
+mmS_wp = (mmS_wp + 1) & mmB_mask;
+mmS_cl += 1;
+mmS_cs += 1;
+mmS_cl >= mmB_hopL ? (
+  mmS_cl = 0;
+  mmB_on ? mm_upd(mmB_NL, mmI_winL, mmI_eLb, mmI_eLc, mmI_eLw, mmB_enL, mmB_nrmL, mmB_c0L, mmB_c1L, mmB_hopL);
+);
+mmS_cs >= mmB_hopS ? (
+  mmS_cs = 0;
+  mmB_on ? (
+    mm_upd(mmB_NS, mmI_winS, mmI_eSb, mmI_eSc, mmI_eSw, mmB_enS, mmB_nrmS, mmB_c0S, mmB_c1S, mmB_hopS);
+    mmS_j = 0;
+    loop(mmB_nb * 17, gmem[mmB_base + 8 + mmS_j] = mmI_det[mmS_j]; mmS_j += 1;);
+    // masking grid: every 4th short update (the window smooths it over 0.7 s, reads it a few times a second)
+    mmB_mc += 1;
+    mmB_mc >= 4 ? (
+      mmB_mc = 0;
+      mmS_j = 0;
+      loop(mmB_nb * 17, gmem[mmB_msb + mmS_j] = mmI_msk[mmS_j]; mmS_j += 1;);
+    );
+    mmB_cnt += 1;
+    gmem[mmB_base + 1] = mmB_cnt;
+  );
+);
