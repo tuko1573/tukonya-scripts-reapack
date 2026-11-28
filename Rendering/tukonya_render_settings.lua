@@ -219,6 +219,7 @@ function M.split_outputs(str)
       for x in (ent .. "|"):gmatch("([^|]*)|") do f[#f + 1] = (x:gsub("^%s+", ""):gsub("%s+$", "")) end
       local row = { fmt = (f[1] or ""):lower(), srate = tonumber(f[2] or "") or (f[2] or ""),
                     bits = f[3] or "", dither = f[4] or "", folder = f[5] or "", nfields = #f }
+      if #f >= 6 then row.name = f[6] end   -- v2.11.0: 2mix の一覧だけが持つ 6 つ目の欄（ファイル名）
       rows[#rows + 1] = row
     end
   end
@@ -337,6 +338,170 @@ function M.migrate_mastering(t)
 end
 
 -- ===========================================================================
+-- v2.11.0: 2mix Render / 2mix Preview の出力の一覧（OUTPUTS_2MIX）
+-- ===========================================================================
+--   文字列: 「形式|サンプルレート|ビット深度|ディザー||名前」（6 つの欄。5 つ目は Mastering のフォルダ名の欄で、常に空）
+--   名前 … 2mix Render はファイル名のパターンそのもの（PAT_NODITHER と同じ書き方）。
+--          2mix Preview は版の名前（PREVIEW_PATTERN / DEFAULT_PATTERN）の後ろに付ける文字（空でよい）。
+--   サンプルレート 0 は「プロジェクトと同じ」。DDP は無い。
+--   空の文字列 ＝ 今までどおり（MASTER_BITS・SRATE・FORMAT2・DITHER_MODE・PAT_* から決まる組。下の legacy_rows_2mix）。
+M.OUT2_EXT = { wav = ".wav", aac = ".m4a", mp3 = ".mp3" }
+
+function M.serialize_outputs_2mix(rows)
+  local out = {}
+  for _, r in ipairs(rows or {}) do
+    local sr, bits, d = "", "", ""
+    if r.fmt == "wav" then
+      sr = tostring(math.floor(tonumber(r.srate) or 0)); bits = tostring(r.bits or ""); d = tostring(r.dither or "")
+    end
+    out[#out + 1] = table.concat({ r.fmt or "", sr, bits, d, "", (tostring(r.name or ""):gsub("[|;]", "_")) }, "|")
+  end
+  return table.concat(out, ";")
+end
+
+-- 文字列 → 検証済みの行の表。tab … "mix2" / "preview"。戻り値: rows / nil, 理由（日本語）
+function M.parse_outputs_2mix(str, tab)
+  if type(str) ~= "string" then return nil, "文字ではありません" end
+  local rows = M.split_outputs(str)
+  if #rows == 0 then return nil, "出力が1つもありません。「出力を追加」で1つ以上足してください" end
+  local seen = {}
+  for i, r in ipairs(rows) do
+    local where = ("%d 行目"):format(i)
+    if r.nfields ~= 6 then return nil, ("%s の欄の数が違います（6 つ必要: %d）"):format(where, r.nfields) end
+    if r.fmt == "ddp" then return nil, ("%s: DDP は Mastering だけで使えます"):format(where) end
+    if not M.OUT2_EXT[r.fmt] then return nil, ("%s の形式が分かりません（%s）"):format(where, r.fmt) end
+    if r.folder ~= "" then return nil, ("%s の 5 つ目の欄は空にしてください"):format(where) end
+    if r.fmt == "wav" then
+      local sr = tonumber(r.srate)
+      if not sr or sr < 0 or sr ~= math.floor(sr) or sr > 768000 then
+        return nil, ("%s のサンプルレートが正しくありません（%s）"):format(where, tostring(r.srate))
+      end
+      r.srate = sr
+      local k = M.wav_format_key(r.bits) or M.wav_format_key(tonumber(r.bits))
+      if not k then return nil, ("%s のビット深度が分かりません（%s）"):format(where, tostring(r.bits)) end
+      r.bits = k
+      if r.dither == "" then r.dither = "none" end
+      if not OUT_DITHER[r.dither] then return nil, ("%s のディザーが分かりません（%s）"):format(where, r.dither) end
+      if not M.bits_is_fixed(k) then r.dither = "none" end
+    else
+      if tostring(r.srate) ~= "" or r.bits ~= "" then
+        return nil, ("%s: %s はサンプルレートとビット深度を持ちません"):format(where, r.fmt:upper())
+      end
+      if r.dither ~= "" and r.dither ~= "none" then
+        return nil, ("%s: %s にはディザーを掛けられません（%s）"):format(where, r.fmt:upper(), r.dither)
+      end
+      r.srate, r.bits, r.dither = nil, nil, "none"
+    end
+    local name = r.name or ""
+    if tab == "preview" then
+      if name:find("[/\\]") then return nil, ("%s の名前の後ろに / や \\ は使えません"):format(where) end
+    else
+      if not name:match("%S") then return nil, ("%s のファイル名が空です"):format(where) end
+      if name:match("[/\\]%s*$") then return nil, ("%s のファイル名が / で終わっています"):format(where) end
+    end
+    local key = name:lower() .. M.OUT2_EXT[r.fmt]
+    if seen[key] then
+      return nil, ("%d 行目と %d 行目が同じファイル名になります（%s）"):format(seen[key], i, name .. M.OUT2_EXT[r.fmt])
+    end
+    seen[key] = i
+    r.folder, r.nfields = nil, nil
+    r.name = name
+  end
+  return rows
+end
+
+-- 今までの設定（MASTER_BITS・SRATE・FORMAT2・DITHER_MODE・PAT_*）を一覧の形にしたもの。並びは書き出す順と同じ。
+-- ディザーの行は「ディザーを掛ける設定のとき」に入る（トラックが実際にあるかはここでは見ない）。
+function M.legacy_dither_of(cfg)
+  local bits = M.wav_format_key(cfg.MASTER_BITS) or "pcm24"
+  if not M.bits_is_fixed(bits) then return "none" end
+  if cfg.DITHER_MODE == "reaper" then return "reaper" end
+  if cfg.DITHER_MODE == "track" then return (M.dither_host_kind(bits) == "d16") and "track16" or "track24" end
+  return "none"
+end
+function M.legacy_rows_2mix(tab, cfg)
+  local bits = M.wav_format_key(cfg.MASTER_BITS) or "pcm24"
+  local sr = math.floor(tonumber(cfg.SRATE) or 0)
+  local d = M.legacy_dither_of(cfg)
+  local f2 = (cfg.FORMAT2 == "aac" or cfg.FORMAT2 == "mp3") and cfg.FORMAT2 or nil
+  local rows = {}
+  if tab == "preview" then
+    rows[#rows + 1] = { fmt = "wav", srate = sr, bits = bits, dither = d, name = "" }
+    if f2 then rows[#rows + 1] = { fmt = f2, dither = "none", name = "" } end
+  else
+    rows[#rows + 1] = { fmt = "wav", srate = sr, bits = bits, dither = "none", name = tostring(cfg.PAT_NODITHER or "") }
+    if f2 then rows[#rows + 1] = { fmt = f2, dither = "none", name = tostring(cfg.PAT_AAC or "") } end
+    if d ~= "none" then
+      rows[#rows + 1] = { fmt = "wav", srate = sr, bits = bits, dither = d, name = tostring(cfg.PAT_DITHERED or "") }
+    end
+  end
+  return rows
+end
+
+-- 今までどおりの道を通るか。一覧が空（保存していない古い設定も同じ）か、今までの設定から作った一覧と同じ文字なら true。
+function M.is_classic_2mix(cfg)
+  if type(cfg) ~= "table" then return true end
+  local s = cfg.OUTPUTS_2MIX
+  if s == nil or (type(s) == "string" and not s:match("%S")) then return true end
+  return s == M.serialize_outputs_2mix(M.legacy_rows_2mix(cfg.TAB, cfg))
+end
+
+-- REFERENCE に入れるファイルを選ぶ（v2.11.0）。outs … { { path, fmt, dither, version }, ... }（書き出した順）
+--   Preview: 透かしなし（version="clean"）を書き出した回はその中から、無ければ透かしあり（"marked"）から。
+--   その中で: ディザーなしの WAV → 最初の WAV → 最初のファイル。exists(path) が偽のファイルは使わない。
+function M.pick_ref_output(outs, exists)
+  local has_clean = false
+  for _, o in ipairs(outs or {}) do if o.version == "clean" then has_clean = true end end
+  local pool = {}
+  for _, o in ipairs(outs or {}) do
+    if (not has_clean or o.version == "clean") and (not exists or exists(o.path)) then pool[#pool + 1] = o end
+  end
+  for _, o in ipairs(pool) do if o.fmt == "wav" and (o.dither or "none") == "none" then return o end end
+  for _, o in ipairs(pool) do if o.fmt == "wav" then return o end end
+  return pool[1]
+end
+
+-- フォルダの深さ（I_FOLDERDEPTH の並び）から、各トラックの親の番号（0 = 一番上の段）を求める
+function M.parents_from_depths(depths)
+  local parents, stack = {}, {}
+  for i, d in ipairs(depths) do
+    parents[i] = stack[#stack] or 0
+    if d >= 1 then stack[#stack + 1] = i
+    elseif d < 0 then for _ = 1, -d do stack[#stack] = nil end end
+  end
+  return parents
+end
+
+-- REFERENCE（ref 番目）に新しいトラックを足すときの深さ（v2.11.0、v2.11.1 から子があれば最初の直接の子）。
+--   L … REFERENCE の最後の子孫（子が無ければ REFERENCE 自身）、m … L の REFERENCE からの段数（自身なら 0）。
+--   L の深さ → -(m-1)、新しいトラックの深さ → (L の元の深さ) + (m-1)。ほかのトラックの親は変わらない。
+-- 戻り値: { after = L（この後ろに入れる）, new_depth = 新しいトラックの深さ, changes = { [番号] = 新しい深さ } }
+function M.ref_place_plan(depths, ref)
+  local L, m = ref, 0
+  if (depths[ref] or 0) >= 1 then
+    local level = 1
+    for i = ref + 1, #depths do
+      L, m = i, level
+      level = level + depths[i]
+      if level <= 0 then break end
+    end
+  end
+  local dL = depths[L] or 0
+  -- v2.11.1: つこさん「新しいのが左(上)に来てほしい」。子があるときは REFERENCE のすぐ下（最初の直接の子）に深さ 0 で入れる。
+  -- 子が無いときは今までどおり（REFERENCE をフォルダにして、閉じを新しいトラックへ）。last は前の版を探す範囲の終わり。
+  if L ~= ref then return { after = ref, new_depth = 0, changes = {}, last = L } end
+  return { after = L, new_depth = dL + (m - 1), changes = { [L] = -(m - 1) }, last = L }
+end
+
+-- 上の計画を当てた深さの並び（試験用）。戻り値: 新しい並び, 新しいトラックの番号
+function M.ref_apply_plan(depths, plan)
+  local out = {}
+  for i, d in ipairs(depths) do out[i] = (plan.changes[i] ~= nil) and plan.changes[i] or d end
+  table.insert(out, plan.after + 1, plan.new_depth)
+  return out, plan.after + 1
+end
+
+-- ===========================================================================
 -- 既定値
 -- ===========================================================================
 -- 3タブに共通する項目
@@ -388,6 +553,10 @@ local PER_TAB = {
     PAT_AAC         = "bounce/$project_$renderno_$date_sample",              -- Pass U の副形式の最終的な名前
     PAT_DITHERED    = "bounce/$project_$renderno_$date_distribute_dithered", -- Pass D のWAV
     DEFAULT_PATTERN = "bounce/$project_$renderno_$date",                     -- ディザー無しのときの名前
+    -- v2.11.0: 出力の一覧（空 ＝ 今までどおり。M.is_classic_2mix）と「REFERENCE に入れる」
+    OUTPUTS_2MIX    = "",
+    REF_ON          = false,
+    REF_TRACK_NAME  = "REFERENCE",
   },
   preview = {
     SNAPSHOT_ON        = true,   -- v2.10.0: 書き出しのあと SWS スナップショットを残す（タブごとの設定）
@@ -404,6 +573,10 @@ local PER_TAB = {
     DUCK_PRE           = 0.100,  -- 声の何秒手前で下げ切るか
     DUCK_FADE_IN       = 0.150,  -- 下げるフェード時間
     DUCK_RELEASE       = 0.300,  -- 声の後、復帰にかける時間
+    -- v2.11.0: 出力の一覧（空 ＝ 今までどおり。名前の欄は版の名前の後ろに付ける文字）と「REFERENCE に入れる」
+    OUTPUTS_2MIX       = "",
+    REF_ON             = false,
+    REF_TRACK_NAME     = "REFERENCE",
   },
   para = {
     -- 書き出し先の土台（$song ＝このスクリプトが決める曲名。他はREAPERのワイルドカード）。
@@ -561,7 +734,7 @@ local NONEMPTY = {
   PREVIEW_TMP_U = true, CLEAN_TMP_U = true, MASTER_SUBFOLDER = true, MIX_SUBFOLDER = true,
   CHAIN_SUBFOLDER = true, NAME_PREMASTER = true, NAME_HWINSERT = true, NAME_FALLBACK = true,
   HW_PATTERN = true, RAW_TRACK_NAME = true, DEST_TRACK_NAME = true,
-  DITHER24_TRACK_NAME = true, DITHER16_TRACK_NAME = true,
+  DITHER24_TRACK_NAME = true, DITHER16_TRACK_NAME = true, REF_TRACK_NAME = true,
 }
 
 -- 1つのキーの値を見る。戻り値: ok, 理由
@@ -572,6 +745,13 @@ local function check_key(tab, k, v)
     if type(v) ~= "string" or not ENUMS[k][v] then
       return false, ("%s の値が不正です（%s）"):format(k, tostring(v))
     end
+    return true
+  end
+  if k == "OUTPUTS_2MIX" then   -- v2.11.0: 空は「今までどおり」
+    if type(v) ~= "string" then return false, "出力の一覧は文字にしてください" end
+    if not v:match("%S") then return true end
+    local _, why = M.parse_outputs_2mix(v, tab)
+    if why then return false, "出力の一覧が正しくありません: " .. why end
     return true
   end
   if k == "OUTPUTS" then

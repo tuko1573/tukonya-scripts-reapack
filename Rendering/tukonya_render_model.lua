@@ -152,33 +152,38 @@ M.ROWS = {
     { kind = "section", label = "出力", rows = {
       { kind = "path",  key = "OUTPUT_DIR",   label = "ディレクトリ:",
         hint = "空の場合、プロジェクトパスを使います" },
-      { kind = "text",  key = "PAT_NODITHER", label = "ファイル名/ディザーなし:",
+      -- v2.11.0: 出力の一覧（kind="outputs2"）。今までの名前・形式の欄（list_hides）は窓に出さず、一覧の見本の元として記憶だけする
+      { kind = "outputs2", key = "OUTPUTS_2MIX", name_label = "    ファイル名:" },
+      { kind = "text",  key = "PAT_NODITHER", label = "ファイル名/ディザーなし:", list_hides = true,
         hint = "REAPER標準のワイルドカードが使用可能です", note = "dest_u" },
       -- この欄は「ディザー」の選び方で出たり消えたりする（M.visible の "dither_pattern"）
-      { kind = "text",  key = "PAT_DITHERED", label = "ファイル名/ディザーあり:",
+      { kind = "text",  key = "PAT_DITHERED", label = "ファイル名/ディザーあり:", list_hides = true,
         visible = "dither_pattern",
         hint = "ディザーを通した .wav の名前", note = "dest_d" },
       -- この欄は「同時レンダーの形式」が「なし」のときは出さない（M.visible）
-      { kind = "text",  key = "PAT_AAC",      label = "ファイル名/同時レンダー:",
+      { kind = "text",  key = "PAT_AAC",      label = "ファイル名/同時レンダー:", list_hides = true,
         visible = "format2_pattern",
         hint = "同時レンダーの形式（AAC/MP3）は、この名前で出ます", note = "dest_aac" },
       { kind = "check", key = "SNAPSHOT_ON", label = "SWS スナップショットを残す" },
+      { kind = "check", key = "REF_ON", label = "2mixをREFERENCEフォルダに追加する" },
+      { kind = "text",  key = "REF_TRACK_NAME", label = "REFERENCEフォルダのトラックネーム:", note = "ref",
+        when = { key = "REF_ON", value = true } },
     } },
 
     { kind = "section", label = "オプション", rows = {
       { kind = "combo", key = "RANGE_MODE",  label = "範囲", note = "range",
         options = { { "bus_items", "2MIXBUSのアイテム" }, { "timesel", "選択範囲" },
                     { "project", "プロジェクト全体" } } },
-      { kind = "combo", key = "DITHER_MODE", label = "ディザー", note = "dither",
+      { kind = "combo", key = "DITHER_MODE", label = "ディザー", note = "dither", list_hides = true,
         options = { { "track", "Ditherトラック" }, { "reaper", "REAPERのディザー" },
                     { "none", "なし" } } },
       { kind = "info",  note = "hardware",   label = "Master ReaInsert" },
     } },
 
     { kind = "section", label = "出力設定", rows = {
-      { kind = "combo", key = "MASTER_BITS", label = "2mixのビット深度", options = M.WAV_OPTIONS },
-      { kind = "combo", key = "SRATE",       label = "出力のサンプルレート", options = M.SRATE_OPTIONS },
-      { kind = "combo", key = "FORMAT2",     label = "同時レンダーの形式",
+      { kind = "combo", key = "MASTER_BITS", list_hides = true, label = "2mixのビット深度", options = M.WAV_OPTIONS },
+      { kind = "combo", key = "SRATE", list_hides = true,       label = "出力のサンプルレート", options = M.SRATE_OPTIONS },
+      { kind = "combo", key = "FORMAT2", list_hides = true,     label = "同時レンダーの形式",
         options = { { "none", "なし" }, { "aac", "AAC（.m4a）" }, { "mp3", "MP3（.mp3）" } } },
       { kind = "combo", key = "FX_SRATE",    label = "FX処理のサンプルレート", options = M.MST_PROC_SRATE_OPTIONS, note = "fx_rate" },
     } },
@@ -206,14 +211,19 @@ M.ROWS = {
       { kind = "text",  key = "DEFAULT_PATTERN", label = "ファイル名(透かしなし):",
         when = { key = "RENDER_CLEAN_TOO", value = true },
         hint = "「透かしなし」を入れたときだけ使います", note = "dest_clean" },
+      -- v2.11.0: 出力の一覧（透かしあり・なしで同じ一覧。名前の欄は上のファイル名の後ろに付く文字）
+      { kind = "outputs2", key = "OUTPUTS_2MIX", name_label = "    名前の後ろ:" },
       { kind = "check", key = "SNAPSHOT_ON", label = "SWS スナップショットを残す" },
+      { kind = "check", key = "REF_ON", label = "書き出したファイルをREFERENCEフォルダに追加する" },
+      { kind = "text",  key = "REF_TRACK_NAME", label = "REFERENCEフォルダのトラックネーム:", note = "ref",
+        when = { key = "REF_ON", value = true } },
     } },
 
     { kind = "section", label = "オプション", rows = {
       { kind = "combo", key = "RANGE_MODE",  label = "範囲", note = "range",
         options = { { "bus_items", "2MIXBUSのアイテム" }, { "timesel", "選択範囲" },
                     { "project", "プロジェクト全体" } } },
-      { kind = "combo", key = "DITHER_MODE", label = "ディザー", note = "dither",
+      { kind = "combo", key = "DITHER_MODE", label = "ディザー", note = "dither", list_hides = true,
         options = { { "track", "Ditherトラック" }, { "reaper", "REAPERのディザー" },
                     { "none", "なし" } } },
       { kind = "info",  note = "hardware",   label = "Master ReaInsert" },
@@ -221,9 +231,9 @@ M.ROWS = {
     } },
 
     { kind = "section", label = "出力設定", rows = {
-      { kind = "combo", key = "MASTER_BITS", label = "2mixのビット深度", options = M.WAV_OPTIONS },
-      { kind = "combo", key = "SRATE",       label = "出力のサンプルレート", options = M.SRATE_OPTIONS },
-      { kind = "combo", key = "FORMAT2",     label = "同時レンダーの形式",
+      { kind = "combo", key = "MASTER_BITS", list_hides = true, label = "2mixのビット深度", options = M.WAV_OPTIONS },
+      { kind = "combo", key = "SRATE", list_hides = true,       label = "出力のサンプルレート", options = M.SRATE_OPTIONS },
+      { kind = "combo", key = "FORMAT2", list_hides = true,     label = "同時レンダーの形式",
         options = { { "none", "なし" }, { "aac", "AAC（.m4a）" }, { "mp3", "MP3（.mp3）" } } },
       { kind = "combo", key = "FX_SRATE",    label = "FX処理のサンプルレート", options = M.MST_PROC_SRATE_OPTIONS, note = "fx_rate" },
     } },
@@ -868,6 +878,7 @@ function M.note(st, which)
     return ("%d Hz（%s）"):format(rate, why)
   end
   if which == "watermark"    then return M.watermark_note(st) end
+  if which == "ref"          then return M.ref_note(st) end
   if which == "hw_items"     then return M.hw_items_note(st) end
   if which == "hw_reainsert" then return M.hw_reainsert_note(st) end
   return ""
@@ -918,8 +929,14 @@ function M.gate(st)
   if st.tab == "para" and st.detect.sel_tracks == 0 then
     return false, "パラで書き出したいトラックを選択してください。"
   end
+  -- v2.11.0: 出力の一覧（変えてあるときだけ）。壊れた一覧・無い Dither トラックは書き出す前に止める
+  if st.tab == "mix2" or st.tab == "preview" then
+    local why = M.mix_issue(st)
+    if why then return false, why end
+  end
   -- v2.8.0: ディザーの置き場が別のフォルダの中にあると、その親の処理が二重にかかる（core も止める）
-  do
+  -- v2.11.0: 一覧を変えてある回は、行ごとに core が確かめる（ここは今までどおりの道のときだけ）
+  if not ((st.tab == "mix2" or st.tab == "preview") and not M.mix_classic(st)) then
     local dp = M.dither_plan(st)
     if dp.plan == "host" and dp.host and not dp.host.toplevel then
       return false, ("『%s』が一番上の段にありません。上のフォルダの処理が二重にかかるので、一番上の段へ移してください。"):format(dp.hname)
@@ -981,6 +998,168 @@ function M.run(st, api, opts)
     for _, r in ipairs(st.detect.reasons or {}) do res.job:log("自動判定: %s", r) end
   end
   return res, cfg
+end
+
+-- ===========================================================================
+-- v2.11.0: 2mix Render / 2mix Preview の出力の一覧と「REFERENCE に入れる」
+-- ===========================================================================
+M.MIX_FORMAT_OPTIONS = { { "wav", "WAV" }, { "aac", "AAC（.m4a）" }, { "mp3", "MP3（.mp3）" } }
+M.MIX_SRATE_OPTIONS = M.SRATE_OPTIONS   -- 0 ＝ プロジェクトと同じ（2mix は今までどおり選べる）
+M.MIX_DITHER_OPTIONS = { { "none", "なし" }, { "track24", "24bit Ditherトラック" }, { "track16", "16bit Ditherトラック" },
+                         { "reaper", "REAPERのディザー" } }
+
+local function mix_cfg(st)
+  local cfg = S.merge(st.tab, st.ui or {}) or S.defaults(st.tab)
+  cfg.TAB = st.tab
+  return cfg
+end
+-- 今までどおりの道か（core と同じ決まり S.is_classic_2mix）
+function M.mix_classic(st) return S.is_classic_2mix(mix_cfg(st)) end
+
+-- Dither トラックがあるか（窓の名前で。大文字小文字・前後の空白は区別しない）
+local function has_track_ci(st, name)
+  local want = trim_lower(name)
+  for _, t in ipairs((st.detect or {}).tracks or {}) do if trim_lower(t.name) == want then return true end end
+  return false
+end
+local function dither_track_name(st, d)
+  local cfg = mix_cfg(st)
+  if d == "track24" then return cfg.DITHER24_TRACK_NAME end
+  if d == "track16" then return cfg.DITHER16_TRACK_NAME end
+  return nil
+end
+
+-- 窓に並べる行。今までどおりのときは、今までの設定から作った組（実際に出る物だけ）。戻り値: rows, classic
+function M.mix_rows(st)
+  local cfg = mix_cfg(st)
+  if S.is_classic_2mix(cfg) then
+    local rows = S.legacy_rows_2mix(st.tab, cfg)
+    -- ディザー版が出ない（ディザーのトラックが無いなど）ときは、実際に出る組だけを見せる（今までの道と同じ）
+    if not S.plan_makes_pass_d(M.dither_plan(st).plan) then
+      local out = {}
+      for _, r in ipairs(rows) do
+        if r.fmt == "wav" and r.dither ~= "none" then
+          if st.tab == "preview" then r.dither = "none"; out[#out + 1] = r end
+        else
+          out[#out + 1] = r
+        end
+      end
+      rows = out
+    end
+    return rows, true
+  end
+  return S.split_outputs(cfg.OUTPUTS_2MIX), false
+end
+function M.mix_set_rows(st, rows) st.ui.OUTPUTS_2MIX = S.serialize_outputs_2mix(rows) end
+
+-- 自動の名前（2mix Render: 既定のファイル名＋「_44.1-16」など / Preview: 「_44.1-16」など）
+function M.mix_auto_name(st, r)
+  local tail = "_" .. S.auto_folder(r)
+  if st.tab == "preview" then return tail end
+  return tostring(mix_cfg(st).DEFAULT_PATTERN or "") .. tail
+end
+-- 行のディザーの初期値: 16 bit → 16bit Dither、24 bit → 24bit Dither（トラックが無ければ REAPER のディザー）、それ以外はなし
+function M.mix_default_dither(st, r)
+  if r.fmt ~= "wav" or not S.bits_is_fixed(r.bits) then return "none" end
+  local d = S.default_dither(r)
+  local nm = dither_track_name(st, d)
+  if nm and not has_track_ci(st, nm) then return "reaper" end
+  return d
+end
+
+function M.mix_new_row(st, rows)
+  local used = {}
+  for _, r in ipairs(rows or {}) do used[tostring(r.name or ""):lower() .. (S.OUT2_EXT[r.fmt] or "")] = true end
+  for _, cand in ipairs({ { 44100, "pcm16" }, { 48000, "pcm24" }, { 48000, "fp32" }, { 96000, "pcm24" } }) do
+    local r = { fmt = "wav", srate = cand[1], bits = cand[2] }
+    r.dither = M.mix_default_dither(st, r)
+    r.name = M.mix_auto_name(st, r)
+    if not used[r.name:lower() .. ".wav"] then return r end
+  end
+  local r = { fmt = "wav", srate = 48000, bits = "pcm24" }
+  r.dither = M.mix_default_dither(st, r)
+  r.name = M.mix_auto_name(st, r) .. "_" .. tostring(#(rows or {}) + 1)
+  return r
+end
+
+-- 行の1項目を変える。名前とディザーは「自動のままなら」新しい自動の値に追従させる。戻り値: 変えたか, 理由
+function M.mix_change_row(st, rows, i, field, value)
+  local r = rows[i]
+  if not r then return false, "その行はありません" end
+  if field == "name" then r.name = (tostring(value or ""):gsub("[|;]", "")); return true end
+  if field == "dither" then r.dither = value; return true end
+  local was_auto_name = (r.name == M.mix_auto_name(st, r))
+  local was_auto_dither = (r.dither == M.mix_default_dither(st, r))
+  r[field] = value
+  if field == "fmt" then
+    if value == "wav" then
+      r.srate = tonumber(r.srate) or 48000
+      if not S.wav_format_key(r.bits) then r.bits = "pcm24" end
+    else
+      r.srate, r.bits = "", ""
+    end
+    was_auto_dither = true
+  end
+  if was_auto_name then r.name = M.mix_auto_name(st, r) end
+  if was_auto_dither then r.dither = M.mix_default_dither(st, r) end
+  if r.fmt ~= "wav" or not S.bits_is_fixed(r.bits) then r.dither = "none" end
+  return true
+end
+
+-- 行の書き出し先の見本（と、その行で書き出せない理由）
+function M.mix_row_dest(st, r)
+  local dir = M.dest_dir(st) or M.NO_DEST
+  local ext = S.OUT2_EXT[r.fmt] or ""
+  local t = {}
+  if st.tab == "preview" then
+    if st.ui.RENDER_MARKED ~= false then t[#t + 1] = dir .. "/" .. M.fill_wildcards(st, (st.ui.PREVIEW_PATTERN or "") .. (r.name or "")) .. ext end
+    if st.ui.RENDER_CLEAN_TOO then t[#t + 1] = dir .. "/" .. M.fill_wildcards(st, (st.ui.DEFAULT_PATTERN or "") .. (r.name or "")) .. ext end
+  else
+    t[#t + 1] = dir .. "/" .. M.fill_wildcards(st, r.name or "") .. ext
+  end
+  local nm = dither_track_name(st, r.dither)
+  if r.fmt == "wav" and nm and not has_track_ci(st, nm) then
+    t[#t + 1] = ("『%s』トラックがありません（このままでは書き出せません）"):format(nm)
+  end
+  return table.concat(t, "\n")
+end
+
+-- 書き出せない理由（一覧を変えてあるときだけ）。無ければ nil
+function M.mix_issue(st)
+  if st.tab ~= "mix2" and st.tab ~= "preview" then return nil end
+  local s = (st.ui or {}).OUTPUTS_2MIX
+  if s == nil or not tostring(s):match("%S") then return nil end
+  local rows, why = S.parse_outputs_2mix(s, st.tab)
+  if not rows then return "出力の一覧: " .. tostring(why) end
+  if S.is_classic_2mix(mix_cfg(st)) then return nil end
+  local miss = {}
+  for _, r in ipairs(rows) do
+    local nm = dither_track_name(st, r.dither)
+    if nm and not has_track_ci(st, nm) and not miss[nm] then miss[nm] = true; miss[#miss + 1] = ("『%s』"):format(nm) end
+  end
+  if #miss > 0 then
+    return ("出力の一覧でディザーに選んだ %s トラックがありません。トラックを作るか、その行のディザーを選び直してください。"):format(table.concat(miss, "・"))
+  end
+  return nil
+end
+
+-- 「REFERENCE に入れる」の下の1行
+function M.ref_note(st)
+  local want = trim_lower(st.ui.REF_TRACK_NAME)
+  local hits = {}
+  for _, t in ipairs((st.detect or {}).tracks or {}) do if want ~= "" and trim_lower(t.name) == want then hits[#hits + 1] = t end end
+  if #hits == 0 then return "見つかりません（書き出しはできます。入れずに完了画面で知らせます）" end
+  if #hits > 1 then return ("%d 本あります（入れずに完了画面で知らせます）"):format(#hits) end
+  local d = st.detect
+  local tr = hits[1].tr
+  if tr and type(reaper) == "table" and reaper.GetParentTrack then
+    local cur = tr
+    while cur do
+      if cur == d.master or cur == d.bus then return "MASTER／2MIXBUS の中にあります（入れずに完了画面で知らせます）" end
+      cur = reaper.GetParentTrack(cur)
+    end
+  end
+  return "あり → 書き出したファイルを、フォルダの先頭（一番左）に新しいトラックで置きます"
 end
 
 -- ===========================================================================
@@ -1298,6 +1477,7 @@ function M.done_text(cfg, j)
   end
   -- v2.10.0: ファイル一覧のすぐ下に、SWS スナップショットの1行（2mix Render / 2mix Preview）
   if j.snapshot_line then t[#t + 1] = j.snapshot_line end
+  if j.ref_line then t[#t + 1] = j.ref_line end   -- v2.11.0: REFERENCE に入れた（入れられなかったときは注意の1行）
   if cfg.TAB == "para" then
     t[#t + 1] = ""
     if j.chain_dir then

@@ -24,7 +24,7 @@ local Model = dofile(SCRIPT_DIR .. "tukonya_render_model.lua")
 local S     = Model.S
 local Store = Model.Store
 
-local VERSION = "2.10.2"           -- 配布物の版。窓の見出しに出る
+local VERSION = "2.11.1"           -- 配布物の版。窓の見出しに出る
 local NAME    = "TUKONYA RENDER"
 local TITLE   = NAME .. "  v" .. VERSION   -- 窓の見出し（ImGuiの窓の名前でもある）
 local NS      = "TUKONYA_RENDER"
@@ -336,7 +336,56 @@ local function draw_outputs(ctx)
   if changed then Model.mst_set_rows(st, rows) end
 end
 
+-- ---------------------------------------------------------------------------
+-- v2.11.0: 2mix Render / 2mix Preview の出力の一覧（見た目は Mastering の一覧と同じ。フォルダ名の代わりに名前の欄）。
+-- 今までどおり（一覧を変えていない）のときは、今までの設定から作った組を見せる。どこかを変えると、その時の組が保存される。
+-- ---------------------------------------------------------------------------
+local function draw_outputs2(ctx, row)
+  local st = app.st
+  local rows = Model.mix_rows(st)
+  local changed, remove = false, nil
+  local function change(i, field, v)
+    local okc, why = Model.mix_change_row(st, rows, i, field, v)
+    if okc then changed = true else app.message = why end
+  end
+  for i, r in ipairs(rows) do
+    ImGui.PushID(ctx, "out2_" .. i)
+    if i > 1 then ImGui.Dummy(ctx, 1, 4) end
+    label_cell(ctx, ("出力 %d:"):format(i))
+    local rv, v = combo_pick(ctx, "##fmt", 110, Model.MIX_FORMAT_OPTIONS, r.fmt)
+    if rv then change(i, "fmt", v) end
+    if r.fmt == "wav" then
+      ImGui.SameLine(ctx)
+      rv, v = combo_pick(ctx, "##srate", 150, Model.MIX_SRATE_OPTIONS, tonumber(r.srate))
+      if rv then change(i, "srate", v) end
+      ImGui.SameLine(ctx)
+      rv, v = combo_pick(ctx, "##bits", 130, Model.WAV_OPTIONS, r.bits)
+      if rv then change(i, "bits", v) end
+    end
+    if #rows > 1 then   -- 最後の1行は消せない（空の一覧は「今までどおり」に戻ってしまうため）
+      ImGui.SameLine(ctx)
+      if ImGui.Button(ctx, "削除") then remove = i end
+    end
+    if r.fmt == "wav" and S.bits_is_fixed(r.bits) then
+      label_cell(ctx, "    ディザー:")
+      rv, v = combo_pick(ctx, "##dither", 250, Model.MIX_DITHER_OPTIONS, r.dither)
+      if rv then change(i, "dither", v) end
+    end
+    label_cell(ctx, row.name_label or "    ファイル名:")
+    ImGui.SetNextItemWidth(ctx, -110)
+    local rv2, v2 = ImGui.InputText(ctx, "##name", tostring(r.name or ""))
+    if rv2 then change(i, "name", v2) end
+    draw_note(ctx, Model.mix_row_dest(st, r))
+    ImGui.PopID(ctx)
+  end
+  if remove then table.remove(rows, remove); changed = true end
+  ImGui.Dummy(ctx, 1, 4)
+  if ImGui.Button(ctx, "出力を追加") then rows[#rows + 1] = Model.mix_new_row(st, rows); changed = true end
+  if changed then Model.mix_set_rows(st, rows) end
+end
+
 local function draw_row(ctx, row, ui)
+  if row.list_hides then return end   -- v2.11.0: 出力の一覧に置き換えた欄（記憶はする）
   -- 「チェックを入れたときだけ出る欄」（row.when）
   if row.when then
     local cur = ui[row.when.key]
@@ -384,6 +433,7 @@ local function draw_row(ctx, row, ui)
   end
   if row.kind == "meta" then draw_meta(ctx); return end
   if row.kind == "outputs" then draw_outputs(ctx); return end
+  if row.kind == "outputs2" then draw_outputs2(ctx, row); return end
   if row.kind == "info" then
     label_cell(ctx, row.label)
     -- row.grey が立っている行は、下に出る読み取り専用の1行と同じ灰色で出す
@@ -641,6 +691,11 @@ local function draw_done(ctx)
     if j.snapshot_line and not (res and (res.err or res.aborted)) then
       ImGui.Dummy(ctx, 1, 4)
       ImGui.TextWrapped(ctx, j.snapshot_line)
+    end
+    -- v2.11.0: REFERENCE に入れた1行（入れられなかったときは下の「注意」に理由が出る）
+    if j.ref_line and not (res and (res.err or res.aborted)) then
+      ImGui.Dummy(ctx, 1, 4)
+      ImGui.TextWrapped(ctx, j.ref_line)
     end
     if j.chain_dir then
       ImGui.SeparatorText(ctx, "MASTERのプラグイン設定")

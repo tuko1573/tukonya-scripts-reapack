@@ -23,7 +23,7 @@
 local DIR = debug.getinfo(1, "S").source:match("@(.*[/\\])") or ""
 local S = dofile(DIR .. "tukonya_render_settings.lua")
 
-local C = { DIR = DIR, Settings = S, VERSION = "2.10.2" }
+local C = { DIR = DIR, Settings = S, VERSION = "2.11.1" }
 
 -- v2.10.0: 書き出し番号（Store）と SWS スナップショット（Snapshot）。どちらも2mix Render / 2mix Preview だけが使う。
 local Store = dofile(DIR .. "tukonya_render_store.lua")
@@ -248,6 +248,9 @@ function C.new(cfg)
     RENDER_DITHER = 16, RENDER_NORMALIZE = 0,
   }
   j.passm_n = 0
+  -- v2.11.0: 2mix Render / 2mix Preview で、出力の一覧を窓で変えてある（今までの組と違う）ときだけ新しい道を通る
+  j.custom = (cfg.TAB == "mix2" or cfg.TAB == "preview") and not S.is_classic_2mix(cfg)
+  j.outs = {}   -- 書き出した納品物の役割（REFERENCE に入れるファイルを選ぶため。{ path, fmt, dither, version, call }）
   return j
 end
 
@@ -325,6 +328,12 @@ function Job:add_produced(p)
   if p and p ~= "" then
     self.produced[#self.produced + 1] = p
     self:log_plain("  書き出し: " .. p)
+  end
+end
+-- v2.11.0: 書き出した納品物の役割を控える（REFERENCE に入れるファイルを選ぶため。書き出しには関わらない）
+function Job:tag_out(p, fmt, dither, version)
+  if p and p ~= "" then
+    self.outs[#self.outs + 1] = { path = p, fmt = fmt, dither = dither or "none", version = version, call = self.rd_calls }
   end
 end
 
@@ -1384,6 +1393,11 @@ function Job:cleanup()
     end
     self.DHOST_ITEM = nil
   end
+  -- v2.11.0: 出力の一覧の行を Dither トラックで書く途中で落ちたときは、その回が置いたアイテムだけを消す
+  if self.ROW_ITEM and reaper.ValidatePtr(self.ROW_ITEM.it, "MediaItem*") and reaper.ValidatePtr(self.ROW_ITEM.tr, "MediaTrack*") then
+    reaper.DeleteTrackMediaItem(self.ROW_ITEM.tr, self.ROW_ITEM.it)
+  end
+  self.ROW_ITEM = nil
   for _, x in ipairs(r.dhosts or {}) do
     if reaper.ValidatePtr(x.tr, "MediaTrack*") then reaper.SetMediaTrackInfo_Value(x.tr, "I_FXEN", x.fxen) end
   end
@@ -1495,7 +1509,7 @@ function Job:prepare()
     S.wav_format_label(cfg.MASTER_BITS), cfg.DITHER_TRACK_NAME, legacy and "あり" or "なし")
   if self.dither_plan == "float" then
     self:log("32/64bit float のためディザー版は書き出しません")
-  elseif self.dither_plan == "missing" then
+  elseif self.dither_plan == "missing" and not self.custom then   -- v2.11.0: 一覧を変えてある回は行ごとに決める
     if hname then
       self:warn(("『%s』トラックも旧『%s』フォルダも見つからなかったため、ディザー無しの1組だけを書き出しました。")
         :format(hname, cfg.DITHER_TRACK_NAME))
@@ -1503,7 +1517,7 @@ function Job:prepare()
       self:warn(("『%s』トラックが見つからなかったため、ディザー無しの1組だけを書き出しました。"):format(cfg.DITHER_TRACK_NAME))
     end
   end
-  if self.DHOST then
+  if self.DHOST and not self.custom then
     -- 形の点検（Mastering の置き場と同じ決まり）。親があると、その親の処理が Pass M と Pass D で二重にかかるので止める。
     local sh = track_shape(self.DHOST)
     if not sh.toplevel then
@@ -1650,6 +1664,8 @@ function Job:require_outputs()
     local size = f and f:seek("end") or nil
     if f then f:close() end
     local is_secondary = ext2 and p:lower():sub(-#ext2) == ext2
+    -- v2.11.0: 一覧を変えてある回は、AAC / MP3 の行が副形式の扱い（WAV は残す）
+    if self.custom then is_secondary = (p:lower():match("%.m4a$") or p:lower():match("%.mp3$")) and true or false end
     if (not size or size <= 0) and is_secondary then
       self:warn(("副形式のファイルが見つかりませんでした（WAV は書き出せています）: %s"):format(p))
     elseif not size or size <= 0 then
@@ -1855,6 +1871,10 @@ function Job:hardware_pass(pattern, keep)
   end
   local wav = self:target()
   if keep then self:add_produced(wav) end
+  -- v2.11.0: 中間ファイル（透かし前の音）は書き出す前に後片付けの対象へ入れる。途中で止まっても残さない
+  -- （透かしありだけの Preview で、透かしの無いファイルが残らないように。つこさん 2026-11-28）
+  -- 書く前から同じ名前のファイルがあるときは入れない（この回が作った物だけを消す）
+  if not keep and wav and not reaper.file_exists(wav) then self.temp_files[#self.temp_files + 1] = wav end
   self:log("ハード通し（実時間）: %s", tostring(wav))
   local before2 = guid_set_of_all_tracks()
   reaper.PreventUIRefresh(-1)  -- 進捗を見せる
@@ -2248,6 +2268,7 @@ end
 -- もともと1回なので、Pass M を挟まず従来どおり直接書き出す（出力は v2.2.3 と同じ）。
 function Job:render_deliverable(pat)
   local cfg = self.S
+  self.rd_calls = (self.rd_calls or 0) + 1   -- v2.11.0: 何回目の呼び出しか（役割の記録だけに使う）
   reaper.SNM_SetIntConfigVar("projrenderlimit", 0) -- Full-speed Offline
   -- 2mix Preview は2回呼ぶので、書き出し元と範囲を毎回ここで決め直す
   reaper.GetSetProjectInfo(0, "RENDER_SETTINGS", self.master_mix, true)
@@ -2270,7 +2291,8 @@ function Job:render_deliverable(pat)
     self:log("書き出し（ディザーなしの1本だけ）: %s", tostring(wav))
     self:render(wav)
     self:add_produced(wav)
-    if self.FMT2_EXT then self:add_produced(self:secondary(wav)) end
+    self:tag_out(wav, "wav", "none")
+    if self.FMT2_EXT then self:add_produced(self:secondary(wav)); self:tag_out(self:secondary(wav), cfg.FORMAT2, "none") end
     return
   end
 
@@ -2313,7 +2335,8 @@ function Job:render_deliverable(pat)
     self:log("書き出し（ディザーなしの1本だけ / Pass M から）: %s", tostring(wav_fb))
     wav_fb = self:passm_derive(self.FMT_MASTER, pat.fallback, wav_fb)
     self:add_produced(wav_fb)
-    if self.FMT2_EXT then self:add_produced(self:secondary(wav_fb)) end
+    self:tag_out(wav_fb, "wav", "none")
+    if self.FMT2_EXT then self:add_produced(self:secondary(wav_fb)); self:tag_out(self:secondary(wav_fb), cfg.FORMAT2, "none") end
     self:passm_teardown(wav_m)
     return
   end
@@ -2330,6 +2353,7 @@ function Job:render_deliverable(pat)
   end
   if pat.keep_u then
     self:add_produced(wav_u)
+    self:tag_out(wav_u, "wav", "none")
   elseif wav_u then
     self.temp_files[#self.temp_files + 1] = wav_u   -- 副形式を取るためだけのWAVは捨てる
   end
@@ -2341,6 +2365,7 @@ function Job:render_deliverable(pat)
       if okr then
         self:log("副形式の名前を変えました: %s → %s", tmp2, final2)
         self:add_produced(final2)
+        self:tag_out(final2, cfg.FORMAT2, "none")
       else
         self:warn(("副形式の名前を変えられませんでした（%s → %s: %s）"):format(tmp2, final2, tostring(errr)))
       end
@@ -2367,6 +2392,7 @@ function Job:render_deliverable(pat)
   if self.dither_plan == "host" and self.DHOST then
     wav_d = self:dhost_pass_d(pat, wav_m, wav_d)
     self:add_produced(wav_d)
+    self:tag_out(wav_d, "wav", "dither")
     self:passm_teardown(wav_m)
     return
   end
@@ -2381,6 +2407,7 @@ function Job:render_deliverable(pat)
   wav_d = self:passm_derive(self.FMT_MASTER_D, pat.d, wav_d)
   self:set_dither(false)
   self:add_produced(wav_d)
+  self:tag_out(wav_d, "wav", "dither")
   self:passm_teardown(wav_m)
 end
 
@@ -2573,7 +2600,8 @@ end
 local FLOW = {}
 
 -- ----- 2mix Render（旧 TUKO_2Stage_HW_Master_Render）-----
-function FLOW.mix2(j)
+-- v2.11.0: 中身は v2.10.2 の FLOW.mix2 そのまま（名前だけ変えた）。出力の一覧が今までどおりのときに通る。
+local function classic_mix2(j)
   local cfg = j.S
   j:resolve_range()
 
@@ -2618,7 +2646,8 @@ end
 -- ----- 2mix Preview（旧 TUKO_2Stage_Preview_Render）-----
 -- v2.10.0: 「透かしあり」(RENDER_MARKED) と「透かしなし」(RENDER_CLEAN_TOO) を、チェックした版だけ書き出す。
 --   「透かしなし」だけのときは、PREVIEWONLY トラックもそのアイテムも要らない。
-function FLOW.preview(j)
+-- v2.11.0: 中身は v2.10.2 の FLOW.preview そのまま（名前だけ変えた）。出力の一覧が今までどおりのときに通る。
+local function classic_preview(j)
   local cfg = j.S
   local marked, clean = cfg.RENDER_MARKED ~= false, cfg.RENDER_CLEAN_TOO == true
   if not marked and not clean then
@@ -2717,6 +2746,328 @@ function FLOW.preview(j)
                            aac = PAT_PREVIEW, d = PAT_PREVIEW, fallback = PAT_PREVIEW })
   end
   j:require_outputs()   -- ぜんぶ確かめられたときだけ成功（番号の確定は C.run）
+end
+
+-- ===========================================================================
+-- v2.11.0: 出力の一覧（2mix Render / 2mix Preview。窓で一覧を今までの組から変えてあるときだけ通る）
+-- ---------------------------------------------------------------------------
+-- ハード通しは今までと同じく1回だけ（ステムを差し替える）。そのあと版ごとに MASTER を1回だけ通した
+-- 64 bit float の中間（Pass M）を作り、そこから行ごとに 形式・サンプルレート・ビット深度・ディザー を変えて書く
+-- （今までの道でディザー版を作るときと同じ形。ディザーなしの行は Pass U と同じ通り道）。
+-- 24bit／16bit Dither トラックは、それを選んだ行のときだけ FX を入れる（Mastering と同じ置き方）。
+-- ===========================================================================
+local function row2mix_format(j, r)
+  local cfg = j.S
+  local fmt, srate = nil, 0
+  if r.fmt == "wav" then fmt, srate = S.wav_format_b64(r.bits), (C.proc_rate(r.srate))
+  elseif r.fmt == "aac" or r.fmt == "mp3" then
+    fmt = (r.fmt == "aac") and S.AAC_FORMAT2 or S.MP3_FORMAT2
+    -- AAC/MP3 は今までの道の副形式と同じく「出力のサンプルレート」で書く（0＝プロジェクトのレートだと、
+    -- 96 kHz の曲で AAC が REAPER の窓で止まった。MBP 実測 2026-11-28）
+    srate = (j.FMT_MASTER and tonumber(j.FMT_MASTER.RENDER_SRATE)) or tonumber(cfg.SRATE) or 0
+  end
+  return {
+    RENDER_FORMAT = fmt, RENDER_FORMAT2 = "",
+    RENDER_SRATE = srate, RENDER_CHANNELS = cfg.CHANNELS,
+    RENDER_DITHER = (r.dither == "reaper") and cfg.REAPER_DITHER_BITS or 16,
+    RENDER_NORMALIZE = 0,
+  }
+end
+C.row2mix_format = row2mix_format
+
+local function row2mix_label(x)
+  local r = x.row
+  local t = (r.fmt == "wav") and ("WAV %s / %s / ディザー %s"):format(
+      (tonumber(r.srate) or 0) > 0 and (tostring(r.srate) .. " Hz") or "プロジェクトと同じ",
+      S.wav_format_label(r.bits), S.OUTPUT_DITHER_LABELS[r.dither] or tostring(r.dither))
+    or ((r.fmt == "aac") and "AAC" or "MP3")
+  if x.version == "clean" then t = t .. "（透かしなし）" elseif x.version == "marked" then t = t .. "（透かしあり）" end
+  return ("出力 %d（%s）"):format(x.index, t)
+end
+
+-- 行が使う Dither トラックを探して確かめる（何も書き出す前に呼ぶ）。無ければ止める。
+-- 戻り値: { track24 = { tr, name }, track16 = { tr, name } }（使う物だけ）
+function Job:rows2mix_hosts(rows)
+  local cfg = self.S
+  local need, hosts, miss = {}, {}, {}
+  for _, r in ipairs(rows) do
+    if r.dither == "track24" or r.dither == "track16" then need[r.dither] = true end
+  end
+  for _, k in ipairs({ "track24", "track16" }) do
+    if need[k] then
+      local nm = (k == "track24") and cfg.DITHER24_TRACK_NAME or cfg.DITHER16_TRACK_NAME
+      local tr = find_track_ci(nm)
+      if not tr then
+        miss[#miss + 1] = ("『%s』"):format(nm)
+      else
+        local sh = track_shape(tr)
+        if not sh.toplevel then
+          abort(("『%s』が一番上の段にありません。上のフォルダの処理が二重にかかるので、一番上の段へ移してください。何も書き出さずに中断します。"):format(nm))
+        end
+        if reaper.GetMediaTrackInfo_Value(tr, "B_MAINSEND") < 0.5 then
+          self:warn(("『%s』トラックのマスター送り（親への送り）が切れています。その行が無音になる可能性があります。"):format(nm))
+        end
+        hosts[k] = { tr = tr, name = nm }
+      end
+    end
+  end
+  if #miss > 0 then
+    abort(("出力の一覧でディザーに選んだ %s トラックが見つかりません。何も書き出さずに中断します。\n"
+      .. "トラックを作るか、その行のディザーを選び直してください。"):format(table.concat(miss, "・")))
+  end
+  return hosts
+end
+
+-- 行 × 版の書き出し先を、書き出す前に REAPER に解かせる。同じ名前があれば全部に -001 … を付ける（今までと同じ）。
+-- 2つ以上の行が同じファイルになるなら、何も書き出さずに止める。
+--   versions … { { version = nil, base = nil } }（2mix Render）/ { { version = "clean", base = DEFAULT_PATTERN }, … }（Preview）
+-- 戻り値: list = { { index, row, version, pattern, fmt, want }, … }
+function Job:rows2mix_plan(rows, versions)
+  local list = {}
+  for _, v in ipairs(versions) do
+    for i, r in ipairs(rows) do
+      list[#list + 1] = { index = i, row = r, version = v.version,
+        pattern = self:fill_run((v.base or "") .. r.name), fmt = row2mix_format(self, r) }
+    end
+  end
+  local suffix = self:resolve_suffix(function(suf)
+    local set = {}
+    for _, x in ipairs(list) do set[#set + 1] = self:resolve_target(x.pattern .. suf, x.fmt) end
+    return set
+  end)
+  local seen = {}
+  for _, x in ipairs(list) do
+    x.pattern = x.pattern .. suffix
+    x.want = self:resolve_target(x.pattern, x.fmt)
+    local k = x.want:lower()
+    if seen[k] then
+      abort(("出力の一覧の %s と %s が同じファイルになります。何も書き出さずに中断します。名前を変えてください。\n%s")
+        :format(seen[k], row2mix_label(x), x.want))
+    end
+    seen[k] = row2mix_label(x)
+    self:log("  %s → %s", row2mix_label(x), x.want)
+  end
+  return list
+end
+
+-- 64bit の中間を Dither トラックに置いて1行ぶん書く（dhost_pass_d と同じ形）。途中で落ちたときは cleanup が
+-- アイテム（self.ROW_ITEM）を消し、FXボタン（restore.dhosts）とミュート・ソロ（一覧）を戻す。
+function Job:row2mix_on_host(h, x, wav_m)
+  local host, hname = h.tr, h.name
+  local pos = self.start_pos or 0.0
+  local frames, srate = self.passm_frames, self.passm_srate
+  if not h.checked then
+    h.checked = true
+    local dv = reaper.GetMediaTrackInfo_Value(host, "D_VOL")
+    local dp = reaper.GetMediaTrackInfo_Value(host, "D_PAN")
+    if math.abs(dv - 1.0) > 1e-6 or math.abs(dp) > 1e-6 then
+      self:warn(("『%s』トラックのフェーダーが0dB／センターではありません（音量 %.6f / パン %.6f）。"):format(hname, dv, dp))
+    end
+    local fin = pos + frames / srate
+    for i = 0, reaper.CountTrackMediaItems(host) - 1 do
+      local it0 = reaper.GetTrackMediaItem(host, i)
+      local a = reaper.GetMediaItemInfo_Value(it0, "D_POSITION")
+      local b = a + reaper.GetMediaItemInfo_Value(it0, "D_LENGTH")
+      if a < fin and b > pos then
+        self:warn(("『%s』トラックに元からアイテムがあります。書き出しに混ざる可能性があります"):format(hname))
+        break
+      end
+    end
+  end
+  local it = mst_put_item(host, wav_m, pos, frames, srate)
+  self.ROW_ITEM = { tr = host, it = it }
+  local keep_item = self.PASSM_ITEM
+  self.PASSM_ITEM = it
+  local hun = self:mst_unmute_path(host)
+  local solo0 = reaper.GetMediaTrackInfo_Value(host, "I_SOLO")
+  local soloed = false
+  if reaper.AnyTrackSolo(0) and solo0 == 0 then
+    reaper.SetMediaTrackInfo_Value(host, "I_SOLO", 2)
+    soloed = true
+  end
+  reaper.SetMediaTrackInfo_Value(host, "I_FXEN", 1)
+  self:log("%s（『%s』トラック / 64bit の中間から）: %s", row2mix_label(x), hname, tostring(x.want))
+  local got = self:passm_derive(x.fmt, x.pattern, x.want)
+  reaper.SetMediaTrackInfo_Value(host, "I_FXEN", 0)
+  if reaper.ValidatePtr(it, "MediaItem*") then reaper.DeleteTrackMediaItem(host, it) end
+  self.ROW_ITEM = nil
+  self.PASSM_ITEM = keep_item
+  mst_remute(hun)
+  if soloed then reaper.SetMediaTrackInfo_Value(host, "I_SOLO", solo0) end
+  return got
+end
+
+-- 1つの版を書く: Pass M（64bit）→ 行ごとに書く → 中間を片付ける。
+-- WAV の行が失敗したら止める。AAC / MP3 の行だけの失敗は注意に留める（今までの副形式と同じ扱い）。
+function Job:rows2mix_render(list, hosts)
+  local cfg = self.S
+  reaper.SNM_SetIntConfigVar("projrenderlimit", 0) -- Full-speed Offline
+  reaper.GetSetProjectInfo(0, "RENDER_SETTINGS", self.master_mix, true)
+  reaper.GetSetProjectInfo(0, "RENDER_BOUNDSFLAG", self.bounds_flag, true)
+  self:set_dither(false)
+  self:set_fxopt(0)
+  self.passm_n = self.passm_n + 1
+  local u_dir = list[1].pattern:match("^(.-)/[^/]*$") or ""
+  local m_name = cfg.TMP_PREFIX .. "_passM" .. ((self.passm_n > 1) and ("_" .. self.passm_n) or "")
+  local pat_m = (u_dir == "") and m_name or (u_dir .. "/" .. m_name)
+  local wav_m, frames, srate = self:passm_render(pat_m)
+  self:passm_setup(wav_m, frames, srate)
+  self:set_fxopt(0)
+  if not self.rmaster_warned then
+    self.rmaster_warned = true
+    local mt = reaper.GetMasterTrack(0)
+    if mt then
+      local mv = reaper.GetMediaTrackInfo_Value(mt, "D_VOL")
+      local mp = reaper.GetMediaTrackInfo_Value(mt, "D_PAN")
+      if math.abs(mv - 1.0) > 1e-6 or math.abs(mp) > 1e-6 then
+        self:warn("REAPERのマスタートラックのフェーダーが0dB／センターではありません。64bit の中間と各出力で二重にかかります。")
+      end
+    end
+  end
+  for _, x in ipairs(list) do
+    local r = x.row
+    local function one()
+      local h = (r.dither == "track24" or r.dither == "track16") and hosts[r.dither] or nil
+      if h then return self:row2mix_on_host(h, x, wav_m) end
+      self:log("%s（64bit の中間から）: %s", row2mix_label(x), tostring(x.want))
+      return self:passm_derive(x.fmt, x.pattern, x.want)
+    end
+    if r.fmt == "wav" then
+      local got = one()
+      self:add_produced(got)
+      self:tag_out(got, "wav", r.dither, x.version)
+    else
+      local okr, res = pcall(one)
+      if okr then
+        self:add_produced(res)
+        self:tag_out(res, r.fmt, "none", x.version)
+      else
+        local why = (type(res) == "table" and res.tukonya_abort) or tostring(res)
+        self:warn(("%s を書き出せませんでした（WAV は書き出せています）: %s"):format(row2mix_label(x), why))
+        self.expect_frames, self.expect_tol = self.passm_frames, nil
+      end
+    end
+  end
+  self:passm_teardown(wav_m)
+end
+
+-- 透かし版の用意（classic_preview の同じ場所と同じ中身。新しい道だけが呼ぶ）
+function Job:preview_arm_marked(spans, projlen)
+  local j = self
+  reaper.SetMediaTrackInfo_Value(j.PREVIEW, "B_MUTE", 0)
+  j.ENV = reaper.GetTrackEnvelopeByChunkName(j.MASTER, "<VOLENV2")
+  if not j.ENV then
+    reaper.SetOnlyTrackSelected(j.MASTER)
+    reaper.Main_OnCommand(40406, 0) -- Toggle track volume envelope visible（作成）
+    j.ENV = reaper.GetTrackEnvelopeByChunkName(j.MASTER, "<VOLENV2")
+    j.ENV_CREATED = true
+  end
+  if not j.ENV then abort("MASTERのボリューム・エンベロープを用意できませんでした。") end
+  if not j.ENV_CREATED then
+    local ok, chunk = reaper.GetEnvelopeStateChunk(j.ENV, "", false)
+    if ok and chunk and chunk ~= "" then j.ENV_CHUNK = chunk end
+    if not j.ENV_CHUNK then abort("MASTERのボリューム・エンベロープの今の状態を控えられませんでした。中断します。") end
+  end
+  if reaper.GetGlobalAutomationOverride and reaper.GetGlobalAutomationOverride() == 5 then
+    j:warn("REAPER 全体の「すべてのエンベロープをバイパス」がオンなので、透かし版のダッキングが効いていない恐れがあります。")
+  end
+  if reaper.CountAutomationItems and reaper.CountAutomationItems(j.ENV) > 0 then
+    j:warn("MASTERのボリューム・エンベロープにオートメーションアイテムがあるので、透かし版のダッキングが崩れている恐れがあります。")
+  end
+  j:write_duck_automation(spans, projlen)
+  local NG = "MASTERのボリューム・エンベロープがオンか確かめられず、透かし版のダッキングが効かない恐れがあるため中断します。"
+  local function act_of(ch) return ch and ch:match("\nACT (%d)") end
+  local okc, cur = reaper.GetEnvelopeStateChunk(j.ENV, "", false)
+  if not (okc and act_of(cur)) then abort(NG) end
+  if act_of(cur) == "0" then
+    reaper.SetEnvelopeStateChunk(j.ENV, (cur:gsub("\nACT 0", "\nACT 1", 1)), false)
+    local okr, back = reaper.GetEnvelopeStateChunk(j.ENV, "", false)
+    if not (okr and act_of(back) == "1") then abort(NG) end
+    j:log("MASTERのボリューム・エンベロープがオフだったので、書き出しのあいだだけオンにした")
+  end
+end
+
+local function custom_mix2(j)
+  local cfg = j.S
+  local rows = assert(S.parse_outputs_2mix(cfg.OUTPUTS_2MIX, "mix2"))   -- 壊れた一覧は C.new（S.validate）で止まる
+  j:log("出力の一覧（窓で変えてある）: %d 行", #rows)
+  j:resolve_range()
+  local hosts = j:rows2mix_hosts(rows)          -- 書き出す前に止める物 (1)
+  j:begin_run_number()
+  local list = j:rows2mix_plan(rows, { {} })   -- 書き出す前に止める物 (2)（同じ名前）
+
+  local pat_dir = list[1].pattern:match("^(.-)/[^/]*$") or ""
+  local tmp_pattern = (pat_dir == "") and cfg.TMP_PREFIX or (pat_dir .. "/" .. cfg.TMP_PREFIX)
+  j:make_stem()
+  reaper.GetSetProjectInfo(0, "RENDER_SETTINGS", j.master_mix, true)
+  reaper.GetSetProjectInfo(0, "RENDER_BOUNDSFLAG", j.bounds_flag, true)
+  if j.hw_mode then
+    j:hardware_pass(tmp_pattern, false)   -- ハードを通すのはここだけ（1回）
+  else
+    j:set_master_original()
+  end
+  j:rows2mix_render(list, hosts)
+  j:require_outputs()
+end
+
+local function custom_preview(j)
+  local cfg = j.S
+  local marked, clean = cfg.RENDER_MARKED ~= false, cfg.RENDER_CLEAN_TOO == true
+  if not marked and not clean then
+    abort("「透かしあり」「透かしなし」のどちらにもチェックが入っていません。どちらか1つ以上にチェックを入れてください。")
+  end
+  local rows = assert(S.parse_outputs_2mix(cfg.OUTPUTS_2MIX, "preview"))
+  j:log("出力の一覧（窓で変えてある）: %d 行（透かしあり・なしで同じ一覧）", #rows)
+  local spans = {}
+  if marked then
+    spans = j:build_duck_spans()
+    if #spans == 0 then
+      abort(("『%s』トラックに波形（アイテム）がありません。透かしを置いてから実行してください。"):format(cfg.PREVIEW_TRACK_NAME))
+    end
+  end
+  j:resolve_range()
+  local hosts = j:rows2mix_hosts(rows)
+  j:begin_run_number()
+  local versions = {}
+  if clean then versions[#versions + 1] = { version = "clean", base = cfg.DEFAULT_PATTERN } end
+  if marked then versions[#versions + 1] = { version = "marked", base = cfg.PREVIEW_PATTERN } end
+  local list = j:rows2mix_plan(rows, versions)
+  local function only(v)
+    local t = {}
+    for _, x in ipairs(list) do if x.version == v then t[#t + 1] = x end end
+    return t
+  end
+
+  local pat_dir = (marked and only("marked") or only("clean"))[1].pattern:match("^(.-)/[^/]*$") or ""
+  local tmp_pattern = (pat_dir == "") and cfg.TMP_PREFIX or (pat_dir .. "/" .. cfg.TMP_PREFIX)
+  local projlen = reaper.GetProjectLength(0)
+
+  j:make_stem()
+  reaper.GetSetProjectInfo(0, "RENDER_SETTINGS", j.master_mix, true)
+  reaper.GetSetProjectInfo(0, "RENDER_BOUNDSFLAG", j.bounds_flag, true)
+  if j.PREVIEW then reaper.SetMediaTrackInfo_Value(j.PREVIEW, "B_MUTE", 1) end
+  if j.hw_mode then
+    j:hardware_pass(tmp_pattern, false)   -- ハードを通すのはここだけ（1回。2つの版で共有）
+  else
+    j:set_master_original()
+  end
+  if clean then j:rows2mix_render(only("clean"), hosts) end
+  if marked then
+    -- [v2110試験用の注入点: 透かし版の前]
+    j:preview_arm_marked(spans, projlen)
+    j:rows2mix_render(only("marked"), hosts)   -- 64bit の中間に声とダッキングが入る（行はすべてそこから）
+  end
+  j:require_outputs()
+end
+
+-- 今までどおりか、出力の一覧の道か（j.custom は C.new で S.is_classic_2mix から決めた）
+function FLOW.mix2(j)
+  if j.custom then return custom_mix2(j) end
+  return classic_mix2(j)
+end
+function FLOW.preview(j)
+  if j.custom then return custom_preview(j) end
+  return classic_preview(j)
 end
 
 -- ----- Para + 2mix（旧 TUKONYA_MasterParaRender）-----
@@ -4847,6 +5198,122 @@ function FLOW.mastering(j)
   j:log("64bit の中間ファイルを消した")
 end
 
+-- ===========================================================================
+-- v2.11.0: 「REFERENCE に入れる」（2mix Render / 2mix Preview。書き出しに成功した回だけ、C.run が後片付けのあとに呼ぶ）
+-- ---------------------------------------------------------------------------
+-- REFERENCE（名前で探す。大文字小文字・前後の空白は区別しない）の一番下の直接の子として新しいトラックを1本足し、
+-- 今回書き出したファイルを書き出しの頭の位置に置く。プロジェクトに残す物なので、後片付けでは戻さない
+-- （C.run の Undo ブロックの中なので、Ctrl+Z 1回で消える）。
+-- 置けたら、REFERENCE の中で前にこのスクリプトが入れた印付きのトラック（P_EXT:TUKONYA_RENDER_REF=1）だけをミュートする。
+-- 置けなかったら、この回が作ったトラックだけを消し、変えた深さを戻す。書き出したファイルはそのまま。
+-- ===========================================================================
+C.REF_EXT = "P_EXT:TUKONYA_RENDER_REF"
+local function plain_name(tr)
+  local _, nm = reaper.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false)
+  return tostring(nm or "")
+end
+local function trim(x) return (tostring(x or ""):gsub("^%s+", ""):gsub("%s+$", "")) end
+
+function Job:ref_place()
+  local cfg = self.S
+  local want = trim(cfg.REF_TRACK_NAME)
+  local function skip(why)
+    self:warn("REFERENCE に入れませんでした（書き出したファイルはそのままです）: " .. why)
+  end
+  -- 1. 入れるファイル（この回に書き出して、いま実際にある物）
+  -- 今までの道の Preview は、render_deliverable の1回目が「透かしなし」（書き出したとき）、残りが「透かしあり」
+  if not self.custom and cfg.TAB == "preview" then
+    local clean = cfg.RENDER_CLEAN_TOO == true
+    for _, x in ipairs(self.outs) do x.version = (clean and x.call == 1) and "clean" or "marked" end
+  end
+  local o = S.pick_ref_output(self.outs, function(p) return reaper.file_exists(p) end)
+  if not o then return skip("入れるファイルが見つかりませんでした") end
+  -- 2. REFERENCE トラック（1本だけ。MASTER・2MIXBUS の中は不可）
+  local found = {}
+  for i = 0, reaper.CountTracks(0) - 1 do
+    local tr = reaper.GetTrack(0, i)
+    if want ~= "" and trim(plain_name(tr)):lower() == want:lower() then found[#found + 1] = tr end
+  end
+  if #found == 0 then return skip(("『%s』トラックが見つかりません"):format(want)) end
+  if #found > 1 then return skip(("『%s』という名前のトラックが %d 本あります（1本にしてください）"):format(want, #found)) end
+  local ref = found[1]
+  for _, x in ipairs({ self.MASTER, self.BUS }) do
+    if x and reaper.ValidatePtr(x, "MediaTrack*") and (x == ref or is_ancestor(x, ref)) then
+      return skip(("『%s』が『%s』の中にあります（書き出しに混ざるので入れません）"):format(want, plain_name(x)))
+    end
+  end
+  -- 3. 深さの計画（S.ref_place_plan。ほかのトラックの親は変えない）
+  local tracks, depths = {}, {}
+  for i = 0, reaper.CountTracks(0) - 1 do
+    local tr = reaper.GetTrack(0, i)
+    tracks[i + 1] = tr
+    depths[i + 1] = to_int(reaper.GetMediaTrackInfo_Value(tr, "I_FOLDERDEPTH"))
+  end
+  local ref_i = track_index0(ref) + 1
+  local plan = S.ref_place_plan(depths, ref_i)
+  local prev = {}   -- 前に入れた印付きのトラック（REFERENCE の子孫だけ）
+  for i = ref_i + 1, plan.last do
+    local ok, v = reaper.GetSetMediaTrackInfo_String(tracks[i], C.REF_EXT, "", false)
+    if ok and v == "1" then prev[#prev + 1] = tracks[i] end
+  end
+  local old = {}
+  for i in pairs(plan.changes) do old[i] = depths[i] end
+  local snap = parent_guid_map()
+  local path = o.path
+  local tname = (path:match("([^/\\]+)$") or path):gsub("%.[^%.]+$", "")
+  local newtr
+  local ok, err = pcall(function()
+    reaper.InsertTrackAtIndex(plan.after, false)   -- 0 始まりの plan.after ＝ L のすぐ下
+    newtr = reaper.GetTrack(0, plan.after)
+    if not newtr or newtr == tracks[plan.after + 1] then newtr = nil; error("トラックを作れませんでした") end
+    for i, d in pairs(plan.changes) do reaper.SetMediaTrackInfo_Value(tracks[i], "I_FOLDERDEPTH", d) end
+    reaper.SetMediaTrackInfo_Value(newtr, "I_FOLDERDEPTH", plan.new_depth)
+    local bad = parents_changed(snap)
+    if bad then error(("『%s』の親が変わってしまいます"):format(bad)) end
+    if reaper.GetParentTrack(newtr) ~= ref then error(("『%s』の中に入りませんでした"):format(want)) end
+    reaper.GetSetMediaTrackInfo_String(newtr, "P_NAME", tname, true)
+    reaper.GetSetMediaTrackInfo_String(newtr, C.REF_EXT, "1", true)
+    reaper.SetMediaTrackInfo_Value(newtr, "D_VOL", 1.0)
+    reaper.SetMediaTrackInfo_Value(newtr, "D_PAN", 0.0)
+    reaper.SetMediaTrackInfo_Value(newtr, "B_MAINSEND", 1)
+    reaper.SetMediaTrackInfo_Value(newtr, "B_MUTE", 0)
+    -- 長さ: WAV はファイルの頭から、ほかは REAPER に聞く
+    local frames, srate
+    if path:lower():match("%.wav$") then
+      local fr, _, _, sr = wav_frames(path)
+      if fr and fr > 0 and sr and sr > 0 then frames, srate = fr, sr end
+    end
+    if not frames then
+      local src = reaper.PCM_Source_CreateFromFileEx(path, false)
+      local len = src and reaper.GetMediaSourceLength(src) or 0
+      if src then reaper.PCM_Source_Destroy(src) end
+      if not len or len <= 0 then error("ファイルの長さが分かりませんでした") end
+      frames, srate = len, 1
+    end
+    local okp, perr = pcall(mst_put_item, newtr, path, self.start_pos or 0.0, frames, srate)
+    if not okp then error("アイテムを置けませんでした" .. ((type(perr) == "string") and ("（" .. perr .. "）") or "")) end
+  end)
+  if not ok then
+    -- 元へ: 変えた深さを戻し、作ったトラックを（深さ 0 にしてから）消す
+    for i, d in pairs(old) do
+      if reaper.ValidatePtr(tracks[i], "MediaTrack*") then reaper.SetMediaTrackInfo_Value(tracks[i], "I_FOLDERDEPTH", d) end
+    end
+    if newtr and reaper.ValidatePtr(newtr, "MediaTrack*") then
+      reaper.SetMediaTrackInfo_Value(newtr, "I_FOLDERDEPTH", 0)
+      reaper.DeleteTrack(newtr)
+    end
+    local why = (type(err) == "table" and err.tukonya_abort) or tostring(err)
+    return skip(why)
+  end
+  for _, tr in ipairs(prev) do
+    if reaper.ValidatePtr(tr, "MediaTrack*") then reaper.SetMediaTrackInfo_Value(tr, "B_MUTE", 1) end
+  end
+  self.ref_track = newtr
+  self.ref_line = ("REFERENCE に入れました: 『%s』%s"):format(tname,
+    (#prev > 0) and ("（前に入れた %d 本はミュート）"):format(#prev) or "")
+  self:log("%s / 位置 %.6f 秒 / %s", self.ref_line, self.start_pos or 0.0, path)
+end
+
 C.PREPARE = { hwprint = Job.hw_prepare, mastering = Job.mst_prepare }
 C.CLEANUP = { hwprint = Job.hw_cleanup, mastering = Job.mst_cleanup }
 
@@ -4893,6 +5360,12 @@ function C.run(cfg)
     else
       j:warn("書き出し番号を記録できませんでした: " .. tostring(cerr))
     end
+  end
+  -- v2.11.0: 「REFERENCE に入れる」。成功した回だけ、後片付け（ミュートの戻しなど）のあと・Undo ブロックの中で置く。
+  -- 失敗しても書き出しの結果は変えない（注意を1行出すだけ）。
+  if numbered and pok and j.outputs_verified and cfg.REF_ON == true then
+    local fok, ferr = pcall(function() j:ref_place() end)
+    if not fok then j:warn("REFERENCE に入れる途中でエラーが出ました（書き出したファイルはそのままです）: " .. tostring(ferr)) end
   end
   -- Pass M のピーク（.reapeaks）が後片付けのあとで書かれることがあるので、最後にもう一度消す
   for _, pk in ipairs(j.passm_peaks or {}) do pcall(os.remove, pk) end

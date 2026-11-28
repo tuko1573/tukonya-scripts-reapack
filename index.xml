@@ -8,6 +8,20 @@
 <index version="1" name="Tukonya Scripts">
   <category name="Rendering">
     <reapack name="TUKONYA_Render.lua" type="script" desc="TUKONYA RENDER">
+      <version name="2.11.1" author="tuko" time="2026-11-29T12:00:00Z">
+        <changelog><![CDATA[2.11.1: 2mix Render / 2mix Preview に「REFERENCEフォルダに追加する」を追加。書き出しに成功すると、REFERENCE フォルダ（名前は窓で変えられる）の先頭に新しいトラックを作り、書き出した音を書き出しの頭の位置に置く（2mix はディザーなしの WAV、Preview は書き出した物そのまま。透かしありだけの回は透かしあり）。前にこの機能で入れた版はミュートする（ほかのトラックには触らない）。REFERENCE が無い・MASTER/2MIXBUS の中にあるときは入れずに完了画面で知らせる。2mix Render / 2mix Preview に Mastering と同じ「出力の一覧」（出力を追加／削除）を追加し、WAV（サンプルレート・ビット深度・行ごとのディザー）・AAC・MP3 を1回で出せるようにした（ハードを通すのは1回。初期設定のままなら今までと同じファイル）。ハードを通す書き出しが途中で止まっても、透かし前の中間ファイルを残さないようにした。]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/TUKONYA_Render.lua</source>
+        <source file="tukonya_render_model.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_render_model.lua</source>
+        <source file="tukonya_render_core.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_render_core.lua</source>
+        <source file="tukonya_render_settings.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_render_settings.lua</source>
+        <source file="tukonya_render_store.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_render_store.lua</source>
+        <source file="tukonya_render_snapshot.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_render_snapshot.lua</source>
+        <source file="tukonya_vstpreset_lib.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_vstpreset_lib.lua</source>
+        <source file="tukonya_mastering_lib.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_mastering_lib.lua</source>
+        <source file="README.md">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/README.md</source>
+        <source file="template/TUKONYA_RENDER_template.RPP">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/template/TUKONYA_RENDER_template.RPP</source>
+        <source file="template/Media/PREVIEWONLY.wav">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/template/Media/PREVIEWONLY.wav</source>
+      </version>
       <version name="2.10.2" author="tuko" time="2026-11-28T12:00:00Z">
         <changelog><![CDATA[2.10.2: Para + 2mix を同じ曲で出し直すと、前の回のファイルを確かめてしまい「書き出したファイルの長さが合いません」で止まっていた不具合を修正。納品フォルダが既にあるときは、フォルダ名に _001（次は _002…）を付けた新しいフォルダに書き出す（中のファイル名は初回と同じ。前のフォルダには触らない）。同じ名前のトラックがあっても止まらないようにした。途中で止まった回はフォルダを残し、中の「未完了.txt」に、どのファイルまで書き出せたかと止まった理由を書く（最後まで終わった回には残らない）。完了画面に残した場所とフォルダを開くボタンを出す。]]></changelog>
         <source main="main">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/28f9b6c088a5f9972b3cf905729182ca65cb46fe/Rendering/TUKONYA_Render.lua</source>
