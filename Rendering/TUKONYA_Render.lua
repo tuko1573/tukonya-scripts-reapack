@@ -24,7 +24,7 @@ local Model = dofile(SCRIPT_DIR .. "tukonya_render_model.lua")
 local S     = Model.S
 local Store = Model.Store
 
-local VERSION = "2.10.0"           -- 配布物の版。窓の見出しに出る
+local VERSION = "2.10.2"           -- 配布物の版。窓の見出しに出る
 local NAME    = "TUKONYA RENDER"
 local TITLE   = NAME .. "  v" .. VERSION   -- 窓の見出し（ImGuiの窓の名前でもある）
 local NS      = "TUKONYA_RENDER"
@@ -590,11 +590,13 @@ local function draw_done(ctx)
   end
 
   if j then
+    -- v2.10.1: Para + 2mix が途中で止まったときは、出せたかどうか分からないファイル名は並べず、残した場所だけを出す
+    local kept = j.para_kept_line
     -- 書き出し先（フォルダ）を先に。ファイルはフォルダごとにまとめ、一覧は畳んでおく。
     local groups, order = {}, {}
     -- Para + 2mix は「Master」「Mix」の1つ上のフォルダを書き出し先として1行で出す（つこさん要望）
     local root = j.MIX_DIR and j.MIX_DIR:match("^(.*)[/\\][^/\\]+$") or nil
-    for _, f in ipairs(j.produced) do
+    for _, f in ipairs(kept and {} or j.produced) do
       local d, n = f:match("^(.*)[/\\]([^/\\]+)$")
       if not d then d, n = "", f end
       if root and d:sub(1, #root) == root then
@@ -604,7 +606,13 @@ local function draw_done(ctx)
       groups[d][#groups[d] + 1] = n
     end
     ImGui.SeparatorText(ctx, "書き出し先")
-    if #order == 0 then
+    if kept then
+      ImGui.TextWrapped(ctx, kept)
+      ImGui.SetNextItemWidth(ctx, -150)
+      ImGui.InputText(ctx, "##keptdir", j.para_top, ImGui.InputTextFlags_ReadOnly)
+      ImGui.SameLine(ctx)
+      if ImGui.Button(ctx, "フォルダを開く", 140) then shell_open(j.para_top) end
+    elseif #order == 0 then
       ImGui.Text(ctx, "（ファイルは出ていません）")
     end
     for gi, d in ipairs(order) do
@@ -620,7 +628,7 @@ local function draw_done(ctx)
       ImGui.TextWrapped(ctx, ("置き場所を決められなかったファイル: %d本（REAPERが作ったトラックに残っています）")
         :format(#j.hw.unmatched))
     end
-    if #j.produced > 0 then
+    if #j.produced > 0 and not kept then
       ImGui.Dummy(ctx, 1, 4)
       if ImGui.CollapsingHeader(ctx, ("書き出したファイル一覧（%d本）"):format(#j.produced)) then
         for gi, d in ipairs(order) do

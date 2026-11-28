@@ -23,7 +23,7 @@
 local DIR = debug.getinfo(1, "S").source:match("@(.*[/\\])") or ""
 local S = dofile(DIR .. "tukonya_render_settings.lua")
 
-local C = { DIR = DIR, Settings = S, VERSION = "2.10.0" }
+local C = { DIR = DIR, Settings = S, VERSION = "2.10.2" }
 
 -- v2.10.0: 書き出し番号（Store）と SWS スナップショット（Snapshot）。どちらも2mix Render / 2mix Preview だけが使う。
 local Store = dofile(DIR .. "tukonya_render_store.lua")
@@ -373,6 +373,19 @@ local function remove_with_peaks(self, path)
     end
   end
 end
+-- ----- v2.10.1: Para + 2mix の納品フォルダ（今回専用の新しいフォルダ）-----
+-- フォルダ（またはファイル）がもう有るか。空のフォルダも「有る」に数える。
+local function path_exists(p)
+  if reaper.file_exists(p) then return true end
+  local f = io.open(p, "r")
+  if f then f:close(); return true end
+  if reaper.EnumerateFiles then
+    reaper.EnumerateFiles(p, -1); reaper.EnumerateSubdirectories(p, -1)
+    if reaper.EnumerateFiles(p, 0) or reaper.EnumerateSubdirectories(p, 0) then return true end
+  end
+  return false
+end
+
 -- 書き出し先の一覧（RENDER_TARGETS。「;」区切り）と、いま選ばれているアイテム（トラック名と位置）
 function Job:targets_all()
   local ok, t = reaper.GetSetProjectInfo_String(0, "RENDER_TARGETS", "", false)
@@ -497,19 +510,104 @@ function Job:expected_seconds()
 end
 
 -- 書き出して、出来たファイルを確かめる。合わなければ中断（後片付けは呼び出しの外で行う）。
-function Job:render(wav)
+-- v2.10.1: allow_serial は Para の Mix だけが true（同じ名前のトラックが2本あると REAPER は2本目を bass-001.wav のように書く）。
+-- 戻り値: 実際に書かれたファイル（Para 以外は渡された wav のまま）。
+function Job:render(wav, allow_serial)
+  self:para_guard_targets()
+  self:para_mark_incomplete()   -- 最初の書き出しの直前に置く（2回目以降は何もしない）
+  if self.para_marker then self:para_note("書き出し開始: " .. (tostring(wav):gsub("^.*[/\\]", ""))) end
+  local pdir, pbefore, pn
+  if self.para_top and wav and wav ~= "" then   -- 今回の納品フォルダは新しい。書く前後の .wav の一覧の差を見る
+    pdir = wav:match("^(.*)[/\\][^/\\]+$")
+    if pdir then
+      pbefore = self:wav_names(pdir)
+      pn = 0
+      for _, p in ipairs(self:targets_all()) do
+        if p:match("^(.*)[/\\][^/\\]+$") == pdir and p:lower():match("%.wav$") then pn = pn + 1 end
+      end
+      if pn < 1 then pn = 1 end
+    end
+  end
   self:apply_range()
   local t0 = clock()
   reaper.Main_OnCommand(42230, 0)  -- Render, most recent settings, auto-close
   local sec = clock() - t0
+  if pbefore then wav = self:para_actual_file(wav, pdir, pbefore, pn, allow_serial) end
   self:verify(wav)
+  if self.para_marker then self:para_note("書き出し済み: " .. (tostring(wav):gsub("^.*[/\\]", ""))) end
   -- ゴール4: 記録には「どのパスが終わったか」と「かかった秒数」を残す
   self:log("パス完了（%.2f 秒）: %s", sec, tostring(wav))
+  return wav
+end
+
+-- フォルダの中の .wav のファイル名の集合
+function Job:wav_names(dir)
+  local set = {}
+  if reaper.EnumerateFiles then
+    reaper.EnumerateFiles(dir, -1)
+    local i = 0
+    while true do
+      local fn = reaper.EnumerateFiles(dir, i)
+      if not fn then break end
+      if fn:lower():match("%.wav$") then set[fn] = true end
+      i = i + 1
+    end
+  end
+  return set
+end
+
+-- 書く前後の差から「この回に増えた .wav」を求め、確かめる相手を決める。ちょうど pn 個でなければ中断。
+-- 答えられた名前がもう有った（同じ名前のトラック）とき、allow_serial なら REAPER が書いた連番のファイルを新しいファイルとして採る。
+function Job:para_actual_file(wav, dir, before, pn, allow_serial)
+  local after = self:wav_names(dir)
+  local new = {}
+  for fn in pairs(after) do if not before[fn] then new[#new + 1] = fn end end
+  table.sort(new)
+  local name = wav:match("([^/\\]+)$")
+  if #new ~= pn then
+    abort(("書き出しで増えたファイルが %d 個でした（期待 %d 個）。中断します。\n答えられた名前: %s\n増えたファイル: %s")
+      :format(#new, pn, wav, (#new > 0) and table.concat(new, ", ") or "なし"))
+  end
+  if pn > 1 then
+    local isnew = {}
+    for _, fn in ipairs(new) do isnew[fn] = true end
+    if not isnew[name] then abort(("書き出しの名前が答えと合いません。中断します。\n答えられた名前: %s\n増えたファイル: %s"):format(wav, table.concat(new, ", "))) end
+    return wav
+  end
+  if new[1] == name then return wav end
+  -- Mac の保存先は大文字・小文字を区別しない（Bass.wav があると bass.wav も「既にある」）
+  local had = before[name]
+  if not had then
+    local lname = name:lower()
+    for fn in pairs(before) do if fn:lower() == lname then had = true; break end end
+  end
+  if had and allow_serial then
+    self:log("同じ名前のトラックがあるので「%s」に書いた（答えられた名前は「%s」）", new[1], name)
+    return dir .. "/" .. new[1]
+  end
+  abort(("書き出し先の名前が答えと違います。中断します。\n答えられた名前: %s\n実際に増えたファイル: %s"):format(wav, new[1]))
+end
+
+-- v2.10.1: Para + 2mix では、書き出し先の全件が今回の納品フォルダの中にあることを書く前に確かめる
+function Job:para_guard_targets()
+  if not self.para_top then return end
+  local all = self:targets_all()
+  if #all == 0 then abort("書き出し先が分かりませんでした。中断します。") end
+  for _, p in ipairs(all) do
+    if not S.path_inside(self.para_top, p) then
+      abort(("書き出し先が今回の納品フォルダの外です。中断します。\n%s\n今回の納品フォルダ: %s"):format(p, self.para_top))
+    end
+  end
 end
 
 function Job:verify(wav)
   if not wav or wav == "" then
     abort("書き出し先のファイル名が分かりませんでした。中断します。")
+  end
+  if self.para_top then   -- v2.10.1: 今回の納品フォルダの中のファイルだけを確かめる
+    if not S.path_inside(self.para_top, wav) then
+      abort(("確かめるファイルが今回の納品フォルダの外にあります。中断します。\n%s\n今回の納品フォルダ: %s"):format(wav, self.para_top))
+    end
   end
   if not reaper.file_exists(wav) then
     -- そのフォルダに実際にあるファイルを10個まで添える（REAPER がどこへ書いたかの手がかり。v2.6.2）
@@ -1651,6 +1749,70 @@ function Job:resolve_target(pattern, fmt)
   return t
 end
 
+-- v2.10.1（Para + 2mix だけ）: 今回専用の納品フォルダを一つ決める。
+--   base … 納品フォルダまでのパターン（REAPER のワイルドカードを含みうる。最後の部品が納品フォルダ）
+--   すでに有る（空でも）なら "_001", "_002" … の、まだ無い最初のものを使う。中の名前は初回と同じ。
+--   絶対パスは REAPER 自身に解かせる。解けなければ、書き出す前に中断する（推測しない）。
+-- 戻り値: 使うパターン, 絶対パス。この絶対パスは「実行前に無かった」ことを確かめたものだけ。
+function Job:para_pick_folder(base, master_sub)
+  local probe = "TUKONYA_probe"
+  local function resolve(pat)
+    local t = self:resolve_target(pat .. "/" .. master_sub .. "/" .. probe, self.FMT_STEM)
+    local top = S.para_top_from_target(t, master_sub, probe .. ".wav")
+    if not top then
+      abort(("納品フォルダの場所を決められませんでした（書き出し先「%s」）。\n"
+        .. "書き出し先の設定（フォルダの指定）を確かめてください。書き出す前に中断します。"):format(tostring(t)))
+    end
+    return top
+  end
+  local b0 = S.numbered_base(base, 0)
+  if not b0 then
+    abort("納品フォルダ（書き出しの土台）が空のため、今回専用のフォルダを作れません。書き出し先の設定でフォルダを指定してください。書き出す前に中断します。")
+  end
+  local top0 = resolve(b0)
+  if not path_exists(top0) then return b0, top0 end
+  local name0 = top0:match("([^/]+)$")
+  for n = 1, 999 do
+    local pat = S.numbered_base(base, n)
+    local top = resolve(pat)
+    if top:match("([^/]+)$") ~= name0 .. ("_%03d"):format(n) then
+      abort(("納品フォルダの番号を付けられませんでした（期待「%s_%03d」、実際「%s」）。書き出す前に中断します。")
+        :format(name0, n, top:match("([^/]+)$") or "?"))
+    end
+    if not path_exists(top) then
+      self:log("納品フォルダ「%s」が既にあるので、今回は「%s」に書き出す", name0, top:match("([^/]+)$"))
+      return pat, top
+    end
+  end
+  abort("納品フォルダの空き番号が見つかりませんでした（_001〜_999 すべて使用中です）。")
+end
+
+-- v2.10.1: 途中で止まった回のフォルダは消さずに残す。代わりに、最初の書き出しの直前に「未完了.txt」を置き、
+-- 最後まで終わった回だけ（C.run の最後）その1ファイルを消す。置く場所はフォルダの直下。
+function Job:para_mark_incomplete()
+  if not self.para_top or self.para_marker then return end
+  reaper.RecursiveCreateDirectory(self.para_top, 0)
+  local p = self.para_top .. "/未完了.txt"
+  local f = io.open(p, "wb")
+  if f then
+    f:write("この書き出しは途中で止まりました。最後まで終わった回のフォルダを使ってください。\n" .. os.date("%Y-%m-%d %H:%M:%S") .. "\n")
+    f:close()
+    self.para_marker = p
+  else
+    self:warn("「未完了.txt」を置けませんでした（途中で止まったときの目印）: " .. p)
+  end
+end
+
+-- v2.10.2: 「未完了.txt」に1行ずつ書き足す（REAPER ごと落ちても、そこまでの記録は残る）。失敗しても書き出しは止めない。
+function Job:para_note(line)
+  if not self.para_marker then return end
+  local f = io.open(self.para_marker, "ab")
+  if f then
+    f:write(os.date("%H:%M:%S") .. "  " .. tostring(line) .. "\n")
+    f:close()
+  end
+end
+
 -- ===========================================================================
 -- 工程
 -- ===========================================================================
@@ -1946,6 +2108,7 @@ function Job:passm_derive(fmt, pattern, want)
   if self.PASSM_ITEM and reaper.ValidatePtr(self.PASSM_ITEM, "MediaItem*") then
     self:select_only_item(self.PASSM_ITEM)
   end
+  self:para_guard_targets()
   local all = self:targets_all()
   local nsel, dsel = self:selected_items_desc()
   self:log("  書き出し先の一覧（%d 件）: %s / 選択アイテム %d 個: %s / RENDER_SETTINGS=%d BOUNDSFLAG=%d",
@@ -2601,8 +2764,7 @@ function FLOW.para(j)
     return base .. "/" .. folder .. "/" .. name
   end
   local function mpat(name) return sub_pat(cfg.MASTER_SUBFOLDER, name) end
-  local PARA_PATTERN = sub_pat(cfg.MIX_SUBFOLDER, "$track")
-  j:log("書き出しの土台: %s", base == "" and "(空)" or base)
+  local PARA_PATTERN   -- v2.10.1: 納品フォルダを決めたあとで組む（下）
 
   local NAME_1   = cfg.NAME_PREMASTER
   local NAME_2   = cfg.NAME_HWINSERT
@@ -2634,22 +2796,41 @@ function FLOW.para(j)
     else j:warn("paraの範囲に「選択範囲」を選びましたが、選択範囲がないので曲全体で書き出しました。") end
   end
 
-  -- 同名ファイルの自動連番。対象はMasterフォルダの全ファイル。
-  -- パラ（Mixフォルダ）は対象外＝REAPER自身の同名ファイル処理に任せる（従来どおり）。
-  local suffix = j:resolve_suffix(function(suf)
-    local set = {}
-    set[#set + 1] = j:resolve_target(mpat(NAME_1 .. suf), j.FMT_STEM)
-    set[#set + 1] = j:resolve_target(mpat(NAME_2 .. suf), j.FMT_STEM)
-    set[#set + 1] = j:resolve_target(mpat(NAME_U .. suf), j.FMT_MASTER)
-    if j.FMT2_EXT then
-      set[#set + 1] = j:secondary(j:resolve_target(mpat(NAME_AAC .. suf), j.FMT_MASTER))
-    end
-    -- ディザー版が出るのは「Ditherトラックがある」ときだけ（無ければ上の1組だけ）
-    if j:makes_pass_d() then   -- v2.8.0: prepare で決めた道（旧フォルダでは v2.7.x と同じ）
-      set[#set + 1] = j:resolve_target(mpat(NAME_D .. suf), j.FMT_MASTER_D)
-    end
-    return set
-  end)
+  -- v2.10.1: 同名ファイルの連番（Master のファイル名の -001）はやめ、納品フォルダそのものに番号を付ける。
+  -- 納品フォルダが既にあれば（空でも）_001, _002 … の新しいフォルダに書く。中の名前は初回と同じ。
+  -- 前のフォルダには何も書かない。今回のフォルダの外には書かない（render / verify が確かめる）。
+  -- 例外: 書き出しの土台が空（プロジェクトのあるフォルダへ出す設定。窓の試験 mpr_projdir が「止まってはいけない」と決めている）
+  -- のときは納品フォルダが無いので、番号は付けられない。従来どおり（Master のファイル名の連番）に任せる。
+  if base ~= "" then
+    local pat, top = j:para_pick_folder(base, cfg.MASTER_SUBFOLDER)
+    base = pat
+    j.para_top = top   -- 実行前に無かったことを確かめたフォルダ
+    j:log("今回の納品フォルダ: %s", top)
+  else
+    j:log("書き出しの土台が空なので、今回専用の納品フォルダは作れません（同名のファイルは従来どおりの連番になります）")
+  end
+  PARA_PATTERN = sub_pat(cfg.MIX_SUBFOLDER, "$track")
+  j:log("書き出しの土台: %s", base == "" and "(空)" or base)
+
+  -- 土台が空のときだけ（従来どおり）: 同名ファイルの自動連番。対象はMasterフォルダの全ファイル。
+  -- パラ（Mixフォルダ）は対象外＝REAPER自身の同名ファイル処理に任せる。
+  local suffix = ""
+  if not j.para_top then
+    suffix = j:resolve_suffix(function(suf)
+      local set = {}
+      set[#set + 1] = j:resolve_target(mpat(NAME_1 .. suf), j.FMT_STEM)
+      set[#set + 1] = j:resolve_target(mpat(NAME_2 .. suf), j.FMT_STEM)
+      set[#set + 1] = j:resolve_target(mpat(NAME_U .. suf), j.FMT_MASTER)
+      if j.FMT2_EXT then
+        set[#set + 1] = j:secondary(j:resolve_target(mpat(NAME_AAC .. suf), j.FMT_MASTER))
+      end
+      -- ディザー版が出るのは「Ditherトラックがある」ときだけ（無ければ上の1組だけ）
+      if j:makes_pass_d() then   -- v2.8.0: prepare で決めた道（旧フォルダでは v2.7.x と同じ）
+        set[#set + 1] = j:resolve_target(mpat(NAME_D .. suf), j.FMT_MASTER_D)
+      end
+      return set
+    end)
+  end
   NAME_1, NAME_2, NAME_3 = NAME_1 .. suffix, NAME_2 .. suffix, NAME_3 .. suffix
   NAME_U, NAME_D, NAME_AAC = NAME_U .. suffix, NAME_D .. suffix, NAME_AAC .. suffix
 
@@ -2751,7 +2932,7 @@ function FLOW.para(j)
           reaper.SetOnlyTrackSelected(P)
           j:set_pattern(sub_pat(cfg.MIX_SUBFOLDER, para_relpath(T)))  -- 名前とフォルダは常にT基準
           j:log("パラ書き出し: %s", tn)
-          j:render(j:target())
+          j:render(j:target(), true)
           j.para_count = j.para_count + 1
         end
       end
@@ -2773,13 +2954,13 @@ function FLOW.para(j)
         reaper.SetOnlyTrackSelected(T)
         j:set_pattern(sub_pat(cfg.MIX_SUBFOLDER, para_relpath(T)))
         j:log("パラ書き出し: %s → %s/%s", tn, cfg.MIX_SUBFOLDER, para_relpath(T))
-        j:render(j:target())
+        j:render(j:target(), true)
         j.para_count = j.para_count + 1
       end
     end
   else
     j:log("パラ書き出し: 選択トラックを一括")
-    j:render(j:target())
+    j:render(j:target(), true)
     j.para_count = #j.restore.sel
   end
   j:log("パラ書き出し完了")
@@ -4717,6 +4898,23 @@ function C.run(cfg)
   for _, pk in ipairs(j.passm_peaks or {}) do pcall(os.remove, pk) end
   -- Mastering: 中身が空になった作業フォルダを消す（空でなければ消えない）
   for _, d in ipairs(j.passm_dirs or {}) do pcall(os.remove, d) end
+  -- v2.10.1（Para + 2mix だけ）: 最後まで終わった回は、「未完了.txt」だけを消す（この版の唯一の削除。置いた場所そのもの）。
+  -- 止まった回は、フォルダも中のファイルもそのまま残す。
+  if j.para_marker then
+    if pok then
+      local rok, rerr = os.remove(j.para_marker)
+      if not rok then j:warn("「未完了.txt」を消せませんでした（書き出しは最後まで終わっています。フォルダの中のこのファイルは手で消してください）: " .. tostring(rerr)) end
+    else
+      local why = (type(err) == "table" and err.tukonya_abort) or tostring(err)
+      pcall(function()
+        j:para_note("ここで止まりました。理由:")
+        j:para_note(why)
+        j:para_note("最後の「書き出し開始」に「書き出し済み」が続いていなければ、そのファイルは出来ていないか、途中までです（使わないでください）。")
+      end)
+      j.para_kept_line = ("途中までのファイルを「%s」に残しました（未完了.txt あり）"):format(j.para_top:match("([^/]+)$") or j.para_top)
+      j:log(j.para_kept_line)
+    end
+  end
 
   reaper.PreventUIRefresh(-1)
   reaper.Undo_EndBlock("TUKONYA RENDER（" .. tostring(cfg.TAB) .. "）", -1)

@@ -8,6 +8,20 @@
 <index version="1" name="Tukonya Scripts">
   <category name="Rendering">
     <reapack name="TUKONYA_Render.lua" type="script" desc="TUKONYA RENDER">
+      <version name="2.10.2" author="tuko" time="2026-11-28T12:00:00Z">
+        <changelog><![CDATA[2.10.2: Para + 2mix を同じ曲で出し直すと、前の回のファイルを確かめてしまい「書き出したファイルの長さが合いません」で止まっていた不具合を修正。納品フォルダが既にあるときは、フォルダ名に _001（次は _002…）を付けた新しいフォルダに書き出す（中のファイル名は初回と同じ。前のフォルダには触らない）。同じ名前のトラックがあっても止まらないようにした。途中で止まった回はフォルダを残し、中の「未完了.txt」に、どのファイルまで書き出せたかと止まった理由を書く（最後まで終わった回には残らない）。完了画面に残した場所とフォルダを開くボタンを出す。]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/TUKONYA_Render.lua</source>
+        <source file="tukonya_render_model.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_render_model.lua</source>
+        <source file="tukonya_render_core.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_render_core.lua</source>
+        <source file="tukonya_render_settings.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_render_settings.lua</source>
+        <source file="tukonya_render_store.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_render_store.lua</source>
+        <source file="tukonya_render_snapshot.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_render_snapshot.lua</source>
+        <source file="tukonya_vstpreset_lib.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_vstpreset_lib.lua</source>
+        <source file="tukonya_mastering_lib.lua">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/tukonya_mastering_lib.lua</source>
+        <source file="README.md">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/README.md</source>
+        <source file="template/TUKONYA_RENDER_template.RPP">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/template/TUKONYA_RENDER_template.RPP</source>
+        <source file="template/Media/PREVIEWONLY.wav">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/template/Media/PREVIEWONLY.wav</source>
+      </version>
       <version name="2.10.0" author="tuko" time="2026-11-23T12:00:00Z">
         <changelog><![CDATA[2.10.0: 2mix Preview の透かしを「透かしあり」「透かしなし」の2つのチェックで選べるようにした（両方外すと書き出せない。「なし」だけなら PREVIEWONLY トラックは不要）。2mix Render / 2mix Preview のファイル名に、その曲で書き出しに成功した回数を入れられる記号 $renderno を追加し、既定の名前を「$project_$renderno_$date…」にした（例: title_mix2_03_2026-11-21_sample。途中でやめた回は数えず、その回の書きかけは片付ける。別名保存した曲は 01 から）。書き出し後に SWS スナップショットを「mix2_03」の名前で残す（「SWS スナップショットを残す」で切れる。名前を付けるには js_ReaScriptAPI が要る。無い場合や SWS の「名前を尋ねる」「選択トラックのみ保存」がオンのときは作らず理由を表示）。マスターのボリュームエンベロープが無い・オフの曲で、透かし版のダッキングが効いていなかった不具合を修正。]]></changelog>
         <source main="main">https://raw.githubusercontent.com/tuko1573/tukonya-scripts-reapack/main/Rendering/TUKONYA_Render.lua</source>

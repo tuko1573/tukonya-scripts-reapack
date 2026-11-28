@@ -820,6 +820,38 @@ function M.resolve_delivery_base(base, song)
   return (base:gsub("%$song%f[%A]", function() return song end))
 end
 
+-- v2.10.1（Para + 2mix）: 納品フォルダ（DELIVERY_BASE の最後の部品）に番号を付ける。
+-- 「パターンの最後の部品」の末尾に "_001" を足す。n が 0 または nil なら何も足さない。
+-- 末尾の "/" は落とす。空のとき・番号が範囲外のときは nil。
+function M.numbered_base(base, n)
+  if type(base) ~= "string" then return nil end
+  local b = base:gsub("[/\\]+$", "")
+  if b == "" then return nil end
+  if n == nil or n == 0 then return b end
+  if type(n) ~= "number" or n < 1 or n > 999 then return nil end
+  return b .. ("_%03d"):format(n)
+end
+
+-- REAPER が返した書き出し先（絶対パス）から、納品フォルダの絶対パスを求める。
+-- target は「<納品フォルダ>/<master_sub>/<probe_name>」の形でなければならない（違えば nil）。
+function M.para_top_from_target(target, master_sub, probe_name)
+  if type(target) ~= "string" or target == "" then return nil end
+  local t = target:gsub("\\", "/")
+  local tail = "/" .. tostring(master_sub):gsub("\\", "/") .. "/" .. tostring(probe_name)
+  if #t <= #tail or t:sub(-#tail) ~= tail then return nil end
+  local top = t:sub(1, #t - #tail)
+  if top == "" or not top:find("/", 2, true) then return nil end   -- ルート直下や相対パスは納品フォルダとみなさない
+  return top
+end
+
+-- p が top の中（top 自身は含まない）にあるか
+function M.path_inside(top, p)
+  if type(top) ~= "string" or type(p) ~= "string" or top == "" then return false end
+  local a, b = top:gsub("\\", "/"), p:gsub("\\", "/")
+  a = a:gsub("/+$", "")
+  return #b > #a + 1 and b:sub(1, #a + 1) == a .. "/"
+end
+
 -- ===========================================================================
 -- 実行記録のファイル名と世代管理
 -- ===========================================================================
